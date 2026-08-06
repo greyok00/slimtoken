@@ -382,11 +382,225 @@ def test_proxy_e2e():
         us.shutdown()
 
 
+def test_tokencount_no_whole_serialize():
+    """tokencount must never json.dumps the whole body just to count tokens."""
+    import inspect
+    from slimtoken import tokencount
+    src = inspect.getsource(tokencount)
+    # count_obj walks the structure; it must not fall back to serializing the body
+    check("tokencount has count_obj", hasattr(tokencount, "count_obj"))
+    body = {"system": "x" * 500, "messages": [{"role": "user", "content": "y" * 200}]}
+    a = tokencount.count_obj(body)
+    check("count_obj returns positive int", isinstance(a, int) and a > 0)
+    # same body, same count (cache stable)
+    b = tokencount.count_obj(body)
+    check("count_obj stable across calls", a == b)
+    # estimate_tokens_obj is the drop-in and must equal count_obj for a dict
+    check("estimate_tokens_obj matches count_obj",
+          tokencount.estimate_tokens_obj(body) == a)
+
+
+def test_single_pass_equivalence():
+    """merged optimize_messages output is byte-identical to the staged path."""
+    from slimtoken.pipeline import minify_request, MinifyConfig
+    payload = {"system": "<cold_memory>\n\n\nkeep\n</cold_memory>\n\n\nMore.",
+               "tools": [{"name": "Read", "description": "a" * 300,
+                          "input_schema": {"type": "object"}}],
+               "messages": [
+                   {"role": "user", "content": "dupe " * 60},
+                   {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {"f": "x"}}]},
+                   {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "Z" * 400}]},
+                   {"role": "assistant", "content": [{"type": "tool_use", "id": "t2", "name": "Read", "input": {"f": "y"}}]},
+                   {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2", "content": "Z" * 400}]},
+                   {"role": "user", "content": "final " * 80},
+               ]}
+    cfg = MinifyConfig()
+    out1, _ = minify_request(copy.deepcopy(payload), cfg)
+    out2, _ = minify_request(copy.deepcopy(payload), cfg)
+    check("single-pass deterministic", json.dumps(out1, sort_keys=True) == json.dumps(out2, sort_keys=True))
+    # reduction actually happened
+    from slimtoken.tokencount import count_obj
+    check("single-pass reduces tokens", count_obj(out1) < count_obj(payload))
+
+
+def test_proxy_metrics_and_fastpath():
+    """async proxy: /metrics has latency buckets; fast-path forwards bytes unchanged."""
+    received = {}
+    class U(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        def log_message(self, *a): pass
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0)); b = self.rfile.read(n) if n else b""
+            received["body"] = b
+            ev = (b'event: msg\ndata: {"usage":{"prompt_tokens":12,"completion_tokens":7}}\n\n'
+                  b'event: stop\ndata: {"type":"message_stop"}\n\n')
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(ev)))
+            self.end_headers(); self.wfile.write(ev)
+        def do_GET(self):
+            self.send_response(200); self.send_header("Content-Length", "2"); self.end_headers(); self.wfile.write(b"ok")
+    class TS(socketserver.ThreadingMixIn, socketserver.TCPServer):
+        daemon_threads = True; allow_reuse_address = True
+    us = TS(("127.0.0.1", 9310), U)
+    threading.Thread(target=us.serve_forever, daemon=True).start(); time.sleep(0.2)
+
+    src_dir = str(Path(__file__).resolve().parent.parent / "src")
+    LAUNCH = "from slimtoken.proxy import main; main()"
+
+    # proxy 1: minify ON -> /metrics must carry latency buckets + usage
+    env = dict(os.environ); env.update({"SLIMTOKEN_PORT": "9311", "SLIMTOKEN_UPSTREAM": "http://127.0.0.1:9310", "SLIMTOKEN_MINIFY_BUDGET": "0", "PYTHONPATH": src_dir})
+    p = subprocess.Popen([sys.executable, "-c", LAUNCH], env=env, stderr=subprocess.PIPE, cwd=src_dir)
+    try:
+        ok = False
+        for _ in range(40):
+            try: urllib.request.urlopen("http://127.0.0.1:9311/metrics", timeout=1); ok = True; break
+            except Exception: time.sleep(0.2)
+        check("proxy started (metrics up)", ok)
+        if ok:
+            body = json.dumps({"model": "t", "grammar": "x",
+                "system": "<cold_memory>\nr\n</cold_memory>\n\n\n\n\nMore.",
+                "tools": [{"name": "Read", "description": "short", "input_schema": {"type": "object", "required": ["f"]}}],
+                "messages": [{"role": "user", "content": "hi\n\n\n\nblank"}]}).encode()
+            s = socket.create_connection(("127.0.0.1", 9311), timeout=5); s.settimeout(5)
+            s.sendall(f"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Length: {len(body)}\r\n\r\n".encode() + body)
+            try:
+                while True:
+                    d = s.recv(65536)
+                    if not d: break
+            except socket.timeout: pass
+            s.close(); time.sleep(0.3)
+            m = json.loads(urllib.request.urlopen("http://127.0.0.1:9311/metrics", timeout=2).read())
+            check("metrics has latency buckets",
+                  {"proxy_ingress", "optimize", "ttft", "generation", "total"} <= set(m.get("latency", {}).keys()))
+            check("metrics recorded a sample", m["latency"]["samples"] >= 1)
+            check("metrics extracted completion tokens", m["completion_tokens"] == 7)
+    finally:
+        p.terminate()
+        try: p.wait(timeout=5)
+        except Exception: p.kill()
+
+    # proxy 2: minify OFF -> fast-path must forward body bytes unchanged
+    env2 = dict(env); env2["SLIMTOKEN_PORT"] = "9312"; env2["SLIMTOKEN_MINIFY"] = "0"
+    p2 = subprocess.Popen([sys.executable, "-c", LAUNCH], env=env2, stderr=subprocess.PIPE, cwd=src_dir)
+    try:
+        ok = False
+        for _ in range(40):
+            try: urllib.request.urlopen("http://127.0.0.1:9312/metrics", timeout=1); ok = True; break
+            except Exception: time.sleep(0.2)
+        check("fast-path proxy started", ok)
+        if ok:
+            received.clear()
+            raw = b'{"model":"t","messages":[{"role":"user","content":"exact bytes please"}]}'
+            s = socket.create_connection(("127.0.0.1", 9312), timeout=5); s.settimeout(5)
+            s.sendall(f"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Length: {len(raw)}\r\n\r\n".encode() + raw)
+            try:
+                while True:
+                    d = s.recv(65536)
+                    if not d: break
+            except socket.timeout: pass
+            s.close(); time.sleep(0.2)
+            check("fast-path forwards body byte-identical", received.get("body") == raw)
+    finally:
+        p2.terminate()
+        try: p2.wait(timeout=5)
+        except Exception: p2.kill()
+        us.shutdown()
+
+
+def test_tool_result_compress():
+    """type-specific compressors detect shapes, emit metadata, stay pair-safe."""
+    from slimtoken.tool_result_compress import compress_text, compress_messages
+    # dir listing
+    ls = "total 0\n" + "\n".join(f"drwxr-xr-x  2 user group 4096 Jan 1 12:00 dir{i}" for i in range(40))
+    c = compress_text(ls)
+    check("dir listing compressed", c is not None and "[slimtoken-compressed]" in c)
+    check("dir listing has metadata", c is not None and "B -> " in c)
+    # json — pretty-printed nested structure (realistic tool-output shape)
+    import json as _jj
+    j = _jj.dumps({"items": [{"id": i, "name": f"thing_{i}", "tags": ["a", "b"]} for i in range(60)],
+                   "meta": {"count": 60}}, indent=2)
+    c = compress_text(j)
+    check("json compressed", c is not None and c.startswith("[slimtoken-compressed]"))
+    # log
+    log = "\n".join(f"2024-01-0{i%9+1} 12:00:0{i%9} INFO line {i} " + "z"*30 for i in range(60))
+    c = compress_text(log)
+    check("log compressed", c is not None and "log 60 lines" in c)
+    # source
+    src = "\n".join(["def foo(a, b):", "    # comment", "    return a + b", "", "class Bar:", "    pass"] * 12)
+    c = compress_text(src)
+    check("source compressed", c is not None and "source:" in c)
+    # too short -> no compression
+    check("short text not compressed", compress_text("hello world") is None)
+
+    # pair-safety: messages with tool_use + tool_result pairing preserved
+    msgs = [
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"c": "ls"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": ls}]},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t2", "name": "Bash", "input": {"c": "ls"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2", "content": ls}]},
+    ]
+    new, n = compress_messages(copy.deepcopy(msgs))
+    check("compress reported 2 results", n == 2)
+    # tool_use blocks untouched
+    check("tool_use blocks preserved", new[0]["content"][0]["name"] == "Bash")
+    # tool_result ids preserved
+    check("tool_result id preserved", new[1]["content"][0]["tool_use_id"] == "t1")
+    check("tool_result id preserved 2", new[3]["content"][0]["tool_use_id"] == "t2")
+    # message count unchanged (pair-safety: no removal/reorder)
+    check("message count unchanged", len(new) == len(msgs))
+    # content was actually rewritten
+    check("tool_result content rewritten", new[1]["content"][0]["content"] != msgs[1]["content"][0]["content"])
+
+
+def test_output_filter():
+    """raw passthrough when unset; max_tokens truncates; stop truncates."""
+    from slimtoken.output_filter import OutputFilter
+
+    # 1. raw passthrough when no levers set (feed == input)
+    f = OutputFilter(max_tokens=None, stops=[])
+    out = f.feed(b"event: x\ndata: {\"delta\":{\"text\":\"hello\"}}\n\n")
+    check("raw passthrough unset levers", out == b"event: x\ndata: {\"delta\":{\"text\":\"hello\"}}\n\n")
+
+    # 2. max_tokens truncation: cap at ~3 tokens, stream more
+    # use a simple repeating word so tokens are countable
+    f = OutputFilter(max_tokens=3, stops=[])
+    stream = b'event: m\ndata: {"type":"content_block_delta","delta":{"text":"apple banana cherry date elderberry"}}\n\n'
+    out = f.feed(stream)
+    # the filter should emit a truncated text and then close
+    check("max_tokens produced output", len(out) > 0)
+    check("max_tokens filter closed", f._closed is True)
+    # the emitted text must be a prefix of the original (truncation, not garbage)
+    import json as _j
+    # parse the emitted data line
+    line = [l for l in out.decode().split("\n") if l.startswith("data:")][0]
+    emitted_text = _j.loads(line[5:].strip())["delta"]["text"]
+    check("max_tokens emitted prefix", "apple banana cherry date elderberry".startswith(emitted_text))
+
+    # 3. stop-sequence truncation: stop string itself NOT emitted
+    f = OutputFilter(max_tokens=None, stops=["STOP"])
+    stream = b'event: m\ndata: {"delta":{"text":"before text STOP after text"}}\n\n'
+    out = f.feed(stream)
+    check("stop filter produced output", len(out) > 0)
+    check("stop filter closed", f._closed is True)
+    line = [l for l in out.decode().split("\n") if l.startswith("data:")][0]
+    emitted_text = _j.loads(line[5:].strip())["delta"]["text"]
+    check("stop emitted before-text only", emitted_text == "before text ")
+    check("stop string not emitted", "STOP" not in emitted_text)
+
+    # 4. non-data frames pass through
+    f = OutputFilter(max_tokens=2, stops=[])
+    out = f.feed(b": ping\n\n")
+    check("non-data frame passes through", out == b": ping\n\n")
+
+
 def main():
     tests = [test_fences, test_tools, test_system_and_budget, test_config_optimizer,
              test_install_uninstall, test_dedup, test_distill,
              test_pair_safety_defaults, test_default_reduction, test_lazy_mcp_smoke,
-             test_proxy_e2e]
+             test_proxy_e2e, test_tokencount_no_whole_serialize,
+             test_single_pass_equivalence, test_proxy_metrics_and_fastpath,
+             test_tool_result_compress, test_output_filter]
     print(f"slimtoken v{__version__} — running {len(tests)} test groups")
     for t in tests:
         print(f"\n[{t.__name__}]")

@@ -137,7 +137,89 @@ def bench_overhead(runs=50):
             "p95_ms": round(sorted(times)[int(len(times) * 0.95) - 1], 3),
             "mean_ms": round(statistics.mean(times), 3)}
 
-# ── 4. end-to-end through the REAL proxy (needs a live llama-server) ─────────
+# ── 4. proxy latency breakdown t0-t4 (proxy work vs model generation) ────────
+def bench_latency(runs=20):
+    """Spawn the proxy against a local echo upstream and read the t0-t4 buckets
+    from /metrics. Separates proxy-side work (ingress + optimize) from
+    upstream-side work (ttft + generation). The echo upstream makes the model
+    buckets tiny — the point is to show the instrumentation + proxy overhead,
+    not to model real generation latency."""
+    import subprocess, threading, http.server, socketserver, socket
+    import urllib.request as _ur
+
+    class Echo(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        def log_message(self, *a): pass
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(n) if n else None
+            r = json.dumps({"content": [{"type": "text", "text": "ok"}],
+                            "usage": {"prompt_tokens": 10, "completion_tokens": 4}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(r)))
+            self.end_headers(); self.wfile.write(r)
+        def do_GET(self):
+            self.send_response(200); self.send_header("Content-Length", "2")
+            self.end_headers(); self.wfile.write(b"ok")
+
+    class TS(socketserver.ThreadingMixIn, socketserver.TCPServer):
+        daemon_threads = True; allow_reuse_address = True
+    up = TS(("127.0.0.1", 8290), Echo)
+    threading.Thread(target=up.serve_forever, daemon=True).start()
+    proxy_port = 8291
+    env = dict(os.environ)
+    env["SLIMTOKEN_PORT"] = str(proxy_port)
+    env["SLIMTOKEN_UPSTREAM"] = "http://127.0.0.1:8290"
+    env["SLIMTOKEN_MINIFY_BUDGET"] = "0"
+    src_dir = str(Path(__file__).resolve().parent.parent / "src")
+    env["PYTHONPATH"] = src_dir + ":" + env.get("PYTHONPATH", "")
+    proc = subprocess.Popen([sys.executable, "-u", "-c",
+                             "from slimtoken.proxy import main; main()"],
+                            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        if not _wait_port(proxy_port):
+            return {"error": "proxy did not start"}
+        body = json.dumps(make_payload("large")).encode()
+        # warm (first request loads the tokenizer encoding — exclude from timing)
+        s = socket.create_connection(("127.0.0.1", proxy_port), timeout=5)
+        s.sendall(f"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Length: {len(body)}\r\n\r\n".encode() + body)
+        try:
+            while s.recv(65536): pass
+        except socket.timeout: pass
+        s.close(); time.sleep(0.2)
+        for _ in range(runs):
+            s = socket.create_connection(("127.0.0.1", proxy_port), timeout=5)
+            s.settimeout(10)
+            s.sendall(f"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Length: {len(body)}\r\n\r\n".encode() + body)
+            try:
+                while s.recv(65536): pass
+            except socket.timeout: pass
+            s.close()
+        time.sleep(0.3)
+        m = json.loads(_ur.urlopen(f"http://127.0.0.1:{proxy_port}/metrics", timeout=2).read())
+        L = m["latency"]; n = L["samples"]
+        if not n:
+            return {"error": "no latency samples"}
+        return {
+            "runs": runs, "samples": n,
+            # proxy-side (what slimtoken controls)
+            "ingress_s": round(L["proxy_ingress"] / n, 5),
+            "optimize_s": round(L["optimize"] / n, 5),
+            # upstream-side (model generation — tiny for the echo upstream)
+            "ttft_s": round(L["ttft"] / n, 5),
+            "generation_s": round(L["generation"] / n, 5),
+            "total_s": round(L["total"] / n, 5),
+            "proxy_share_pct": round(100 * (L["proxy_ingress"] + L["optimize"]) / L["total"], 1) if L["total"] else 0,
+        }
+    finally:
+        proc.terminate()
+        try: proc.wait(timeout=5)
+        except Exception: proc.kill()
+        up.shutdown()
+
+
+# ── 5. end-to-end through the REAL proxy (needs a live llama-server) ─────────
 def _post(url, body_bytes, timeout=60):
     req = urllib.request.Request(url, data=body_bytes, method="POST",
                                  headers={"Content-Type": "application/json"})
@@ -260,7 +342,7 @@ def fmt_table(headers, rows):
         out.append("|" + "|".join(" %-*s " % (w[i], r[i]) for i in range(len(headers))) + "|")
     return "\n".join(out)
 
-def report(payload, stages, overhead, e2e):
+def report(payload, stages, overhead, latency, e2e):
     print("=" * 66)
     print(" slimtoken — benchmark")
     print("=" * 66)
@@ -279,8 +361,25 @@ def report(payload, stages, overhead, e2e):
     print("-" * 66)
     print("  median %s ms  ·  p95 %s ms  ·  mean %s ms   (n=%d)" % (
         overhead["median_ms"], overhead["p95_ms"], overhead["mean_ms"], overhead["runs"]))
+    if latency and not latency.get("error"):
+        print("\n[4] PROXY LATENCY t0-t4  (echo upstream, n=%d, large payload)" % latency["runs"])
+        print("    separates proxy-side work (ingress + optimize) from upstream (ttft + generation)")
+        print("-" * 66)
+        rows = [
+            ["t0->t1 ingress  (read req)", "%.4f" % latency["ingress_s"]],
+            ["t1->t2 optimize (parse+minify)", "%.4f" % latency["optimize_s"]],
+            ["t2->t3 ttft     (forward->1st tok)", "%.4f" % latency["ttft_s"]],
+            ["t3->t4 generation (1st->final)", "%.4f" % latency["generation_s"]],
+            ["t0->t4 total", "%.4f" % latency["total_s"]],
+        ]
+        print(fmt_table(["stage", "avg seconds"], rows))
+        print("\n    proxy-side share of total: %.1f%%  (ingress+optimize over total)" % latency["proxy_share_pct"])
+        print("    (upstream buckets are tiny against an echo server; against a real model")
+        print("     ttft+generation dominate and proxy-side becomes negligible)")
+    elif latency:
+        print("\n[4] PROXY LATENCY: skipped (%s)" % latency.get("error", "?"))
     if e2e and not e2e.get("error") and e2e.get("token_reduction_pct") is not None:
-        print("\n[4] END-TO-END through the real proxy  (backend: %s, n=%d, payload=%s)" % (
+        print("\n[5] END-TO-END through the real proxy  (backend: %s, n=%d, payload=%s)" % (
             e2e["backend"], e2e["runs"], e2e.get("size", "?")))
         print("    same Anthropic payload (with tools) sent RAW-direct vs OPTIMIZED-through-proxy")
         print("-" * 66)
@@ -293,9 +392,9 @@ def report(payload, stages, overhead, e2e):
         print("\n    -> The model reports %.0f -> %.0f input tokens (%.1f%% fewer actually processed)."
               % (e2e["raw_input_tokens"], e2e["opt_input_tokens"], e2e["token_reduction_pct"]))
     elif e2e:
-        print("\n[4] END-TO-END: skipped (%s)" % e2e.get("error", "backend unreachable"))
+        print("\n[5] END-TO-END: skipped (%s)" % e2e.get("error", "backend unreachable"))
     else:
-        print("\n[4] END-TO-END: skipped (pass --backend URL to enable)")
+        print("\n[5] END-TO-END: skipped (pass --backend URL to enable)")
     print("\n" + "=" * 66)
 
 def main():
@@ -304,16 +403,18 @@ def main():
                     help="llama-server URL for end-to-end (e.g. http://127.0.0.1:8082)")
     ap.add_argument("--json", action="store_true", help="emit JSON instead of tables")
     ap.add_argument("--e2e-runs", type=int, default=5)
+    ap.add_argument("--latency-runs", type=int, default=20)
     a = ap.parse_args()
     payload = bench_payload()
     stages = bench_stages()
     overhead = bench_overhead()
+    latency = bench_latency(a.latency_runs)
     e2e = bench_e2e(a.backend, a.e2e_runs) if a.backend else None
-    res = {"payload": payload, "stages": stages, "overhead": overhead, "e2e": e2e}
+    res = {"payload": payload, "stages": stages, "overhead": overhead, "latency": latency, "e2e": e2e}
     if a.json:
         print(json.dumps(res, indent=2))
     else:
-        report(payload, stages, overhead, e2e)
+        report(payload, stages, overhead, latency, e2e)
 
 if __name__ == "__main__":
     main()

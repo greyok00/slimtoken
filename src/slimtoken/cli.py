@@ -124,8 +124,58 @@ def cmd_serve(args):
         os.environ["SLIMTOKEN_PORT"] = str(args.port)
     if args.upstream:
         os.environ["SLIMTOKEN_UPSTREAM"] = args.upstream
+    if args.tool_compress:
+        os.environ["SLIMTOKEN_TOOL_COMPRESS"] = "1"
+    if args.max_tokens is not None:
+        os.environ["SLIMTOKEN_MAX_TOKENS"] = str(args.max_tokens)
+    if args.stop:
+        os.environ["SLIMTOKEN_STOP"] = args.stop
+    if args.http2:
+        os.environ["SLIMTOKEN_HTTP2"] = "1"
     from . import proxy
     proxy.main()
+
+
+def cmd_latency(args):
+    """Smoke: send one request through the proxy and print the t0-t4 breakdown."""
+    import json as _json
+    import socket
+    import time
+    port = int(args.port or os.environ.get("SLIMTOKEN_PORT", "8181"))
+    body = _json.dumps({"model": "t",
+                        "system": "<cold_memory>\n\n\nkeep\n</cold_memory>\n\n\nMore.",
+                        "messages": [{"role": "user", "content": "ping"}]}).encode()
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    s.settimeout(10)
+    t0 = time.perf_counter()
+    s.sendall(f"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Length: {len(body)}\r\n\r\n".encode() + body)
+    resp = b""
+    try:
+        while True:
+            d = s.recv(65536)
+            if not d: break
+            resp += d
+    except socket.timeout:
+        pass
+    s.close()
+    t4 = time.perf_counter()
+    # fetch /metrics for the latency buckets (the just-served request is sample 1)
+    import urllib.request
+    try:
+        m = _json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=2).read())
+        L = m.get("latency", {})
+        print(f"latency breakdown (seconds, last sample):")
+        print(f"  t0->t1 ingress   : {L.get('proxy_ingress', 0):.4f}  (read request)")
+        print(f"  t1->t2 optimize   : {L.get('optimize', 0):.4f}  (parse + minify)")
+        print(f"  t2->t3 ttft       : {L.get('ttft', 0):.4f}  (forward -> first token)")
+        print(f"  t3->t4 generation : {L.get('generation', 0):.4f}  (first -> final token)")
+        print(f"  t0->t4 total      : {L.get('total', 0):.4f}")
+        print(f"  samples           : {L.get('samples', 0)}")
+        print(f"  tokens            : {m.get('prompt_tokens', 0)} in -> {m.get('completion_tokens', 0)} out")
+    except Exception as e:
+        print(f"could not read /metrics: {e}", file=sys.stderr)
+    print(f"client-side wall time: {t4 - t0:.4f}s")
+    return 0
 
 
 def cmd_config_optimizer(args):
@@ -159,6 +209,14 @@ def main(argv=None):
     s.add_argument("--port", type=int, default=None)
     s.add_argument("--upstream", type=str, default=None,
                    help="upstream URL (http://127.0.0.1:8080 or https://api.anthropic.com)")
+    s.add_argument("--tool-compress", action="store_true", default=None,
+                   help="enable lossy type-specific tool-result compression (SLIMTOKEN_TOOL_COMPRESS=1)")
+    s.add_argument("--max-tokens", type=int, default=None,
+                   help="enforce a max output-token cap on streamed responses (SLIMTOKEN_MAX_TOKENS)")
+    s.add_argument("--stop", type=str, default=None,
+                   help="comma-joined stop sequences to truncate the streamed response (SLIMTOKEN_STOP)")
+    s.add_argument("--http2", action="store_true", default=None,
+                   help="use HTTP/2 to the upstream (SLIMTOKEN_HTTP2=1; off by default)")
     s.set_defaults(func=cmd_serve)
 
     c = sub.add_parser("config-optimizer", help="recommend llama-server args for a GPU+model")
@@ -183,6 +241,10 @@ def main(argv=None):
                    help="MCP server name (from ~/.slimtoken/lazy_mcp.json)")
     l.add_argument("smoke", nargs="?", default=None, help="run 'smoke' to self-test")
     l.set_defaults(func=cmd_lazy_mcp)
+
+    lt = sub.add_parser("latency", help="send one request through a running proxy and print t0-t4")
+    lt.add_argument("--port", type=int, default=None)
+    lt.set_defaults(func=cmd_latency)
 
     args = ap.parse_args(argv)
     return args.func(args) or 0

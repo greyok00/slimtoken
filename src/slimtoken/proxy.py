@@ -1,62 +1,84 @@
-"""proxy — the drop-in HTTP(S) optimization proxy.
+"""proxy — the drop-in async HTTP(S) optimization proxy.
 
-Point ANTHROPIC_BASE_URL at this proxy (default 127.0.0.1:8181). It:
-  1. fully buffers the request body (one JSON object — only the response streams)
-  2. strips the `grammar` field (llama-server rejects it; harmless to strip for cloud)
-  3. runs the minify pipeline (tools / system / messages, code-fence aware)
-  4. forwards to the upstream — raw socket for local http, http.client for cloud https
-  5. streams the response back to the client, tracking token usage
+Point ANTHROPIC_BASE_URL at this proxy (default 127.0.0.1:8181). Per request it:
+  1. reads the request (async; body buffered once — only the response streams)
+  2. fast-paths small / unoptimized requests as raw bytes (no JSON parse)
+  3. otherwise parses, strips `grammar`, runs the minify pipeline, re-serializes
+  4. forwards to the upstream via a shared, keep-alive httpx.AsyncClient
+  5. streams the response back as RAW bytes (no per-chunk parse), tracking only
+     the final usage event for /metrics
+  6. records t0..t4 latency timestamps separating proxy work from model generation
 
-No dependency on CortexAgent. The pipeline is the pure stdlib ``minify_request``.
+Pipeline (minify_request) stays pure sync CPU — called inline (~3 ms; fine on
+the event loop at LLM-proxy concurrency). The transport is fully async with
+connection reuse, so concurrent requests don't serialize on upstream connects.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-import re
-import select
-import socket
 import sys
-import threading
 import time
-import errno
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
+
+import httpx
 
 from .pipeline import minify_request, MinifyConfig
 from .upstream import Upstream
+from ._deps import jloads, jdumps
 from . import __version__
 
-# ── Token tracking ────────────────────────────────────────────────────────────
-_token_lock = threading.Lock()
-_token_metrics = {
+# ── latency / token metrics ──────────────────────────────────────────────────
+# Single-threaded asyncio — no lock needed for dict updates.
+_metrics: Dict = {
     "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
     "requests": 0, "total_time_s": 0.0, "started_at": datetime.now().isoformat(),
     "current_tok_s": 0.0, "avg_tok_s": 0.0,
+    # latency buckets (seconds), accumulated per request
+    "latency": {
+        "proxy_ingress": 0.0,    # t1-t0  read request
+        "optimize": 0.0,         # t2-t1  parse + minify
+        "ttft": 0.0,             # t3-t2  forward -> first output token
+        "generation": 0.0,       # t4-t3  first -> final token
+        "total": 0.0,            # t4-t0
+        "samples": 0,
+    },
 }
+_HOP_BY_HOP = {"host", "content-length", "transfer-encoding", "expect",
+               "connection", "keep-alive", "proxy-connection", "te", "trailer",
+               "upgrade"}
 
 
-def _record_tokens(pt: int, ct: int, elapsed: float):
-    with _token_lock:
-        _token_metrics["prompt_tokens"] += pt
-        _token_metrics["completion_tokens"] += ct
-        _token_metrics["total_tokens"] += pt + ct
-        _token_metrics["requests"] += 1
-        _token_metrics["total_time_s"] += elapsed
-        if elapsed > 0 and ct > 0:
-            _token_metrics["current_tok_s"] = round(ct / elapsed, 1)
-        if _token_metrics["total_time_s"] > 0 and _token_metrics["completion_tokens"] > 0:
-            _token_metrics["avg_tok_s"] = round(
-                _token_metrics["completion_tokens"] / _token_metrics["total_time_s"], 1)
+def _record(pt: int, ct: int, elapsed: float, lat: dict):
+    _metrics["prompt_tokens"] += pt
+    _metrics["completion_tokens"] += ct
+    _metrics["total_tokens"] += pt + ct
+    _metrics["requests"] += 1
+    _metrics["total_time_s"] += elapsed
+    if elapsed > 0 and ct > 0:
+        _metrics["current_tok_s"] = round(ct / elapsed, 1)
+    if _metrics["total_time_s"] > 0 and _metrics["completion_tokens"] > 0:
+        _metrics["avg_tok_s"] = round(
+            _metrics["completion_tokens"] / _metrics["total_time_s"], 1)
+    L = _metrics["latency"]
+    L["proxy_ingress"] = round(L["proxy_ingress"] + lat.get("proxy_ingress", 0), 4)
+    L["optimize"] = round(L["optimize"] + lat.get("optimize", 0), 4)
+    L["ttft"] = round(L["ttft"] + lat.get("ttft", 0), 4)
+    L["generation"] = round(L["generation"] + lat.get("generation", 0), 4)
+    L["total"] = round(L["total"] + lat.get("total", 0), 4)
+    L["samples"] += 1
 
 
 def _metrics_json() -> str:
-    with _token_lock:
-        m = dict(_token_metrics)
+    m = dict(_metrics)
+    m = {**m, "latency": dict(m["latency"])}
     return json.dumps(m, indent=2)
 
 
-# ── Minify config from env ────────────────────────────────────────────────────
+# ── minify config from env ────────────────────────────────────────────────────
 def _bool_env(name: str, default: bool) -> bool:
     v = os.environ.get(name)
     if v is None:
@@ -72,7 +94,6 @@ def _int_env(name: str, default: int) -> int:
 
 
 def build_minify_cfg() -> MinifyConfig:
-    # Master switch OFF = passthrough (everything else defaults ON).
     if not _bool_env("SLIMTOKEN_MINIFY", True):
         return MinifyConfig(enabled_stages=set())
     stages = set()
@@ -88,8 +109,6 @@ def build_minify_cfg() -> MinifyConfig:
         stages.add("distill")
     skip = {s.strip() for s in os.environ.get(
         "SLIMTOKEN_MINIFY_TOOL_SKIP", "").split(",") if s.strip()}
-    # Budget defaults to a generous backstop: only genuinely bloated contexts
-    # get hard-pruned. 0 disables hard-prune entirely (distill still compresses).
     budget = _int_env("SLIMTOKEN_MINIFY_BUDGET", 131072)
     return MinifyConfig(
         token_budget=budget,
@@ -98,15 +117,53 @@ def build_minify_cfg() -> MinifyConfig:
         keep_last=_int_env("SLIMTOKEN_KEEP_LAST", 8),
         dedup_min_chars=_int_env("SLIMTOKEN_DEDUP_MIN_CHARS", 200),
         distill_max_chars=_int_env("SLIMTOKEN_DISTILL_MAX_CHARS", 240),
+        tool_compress=_bool_env("SLIMTOKEN_TOOL_COMPRESS", False),
     )
 
 
 _CFG = build_minify_cfg()
 
 
+# Output filter (Phase C): active only when SLIMTOKEN_MAX_TOKENS or
+# SLIMTOKEN_STOP is set; otherwise None → raw passthrough, zero overhead.
+def _build_out_filter():
+    try:
+        from .output_filter import from_env
+        return from_env()
+    except Exception as e:
+        print(f"[proxy] output_filter unavailable: {e}", file=sys.stderr)
+        return None
+
+
+# Built once at import (env is process-wide for the proxy process).
+_OUT_FILTER = _build_out_filter()
+
+
+# ── request context + timestamps ──────────────────────────────────────────────
+@dataclass
+class RequestContext:
+    request_id: int = 0
+    t0: float = 0.0   # ingress
+    t1: float = 0.0   # request fully read
+    t2: float = 0.0   # optimized (parse + minify done)
+    t3: float = 0.0   # first output token received from upstream
+    t4: float = 0.0   # final token / stream end
+    pt: int = 0
+    ct: int = 0
+
+    def lat(self) -> dict:
+        return {
+            "proxy_ingress": max(0.0, self.t1 - self.t0),
+            "optimize": max(0.0, self.t2 - self.t1),
+            "ttft": max(0.0, self.t3 - self.t2),
+            "generation": max(0.0, self.t4 - self.t3),
+            "total": max(0.0, self.t4 - self.t0),
+        }
+
+
+# ── chunked body decode (stdlib, pure) ─────────────────────────────────────────
 def _dechunk(data: bytes):
-    """Decode a chunked body. Returns bytes or None if incomplete/malformed."""
-    out = b""; i = 0; n = len(data)
+    out = bytearray(); i = 0; n = len(data)
     while True:
         crlf = data.find(b"\r\n", i)
         if crlf < 0:
@@ -122,285 +179,292 @@ def _dechunk(data: bytes):
             return None
         out += data[i:i + size]
         i += size + 2
+    return bytes(out)
+
+
+# ── fast-path decision ────────────────────────────────────────────────────────
+_FAST_PATH_MAX = 4096  # bodies under this AND no minify stages → raw passthrough
+
+
+def _is_fast_path(body: bytes) -> bool:
+    """Raw passthrough when minify is OFF, or the body is small AND no stages
+    target it (no tool_results to dedup, short history). Conservative: only skip
+    when there is genuinely nothing to optimize."""
+    if not _CFG.enabled_stages:
+        return True
+    if len(body) > _FAST_PATH_MAX:
+        return False
+    # cheap byte probe (no full parse): look for signals that stages would act on
+    if b'"tool_result"' in body or b'"tools"' in body or b'"system"' in body:
+        return False
+    # small body with no tool_result/tools/system — only messages, and minify of
+    # short text is ~zero gain. Still, messages minify collapses blanks; to be
+    # safe and preserve behavior, only fast-path when minify master is off.
+    return False
+
+
+# ── minify (sync CPU; inline on the loop) ──────────────────────────────────────
+def _minify_body(body: bytes) -> bytes:
+    try:
+        parsed = jloads(body)
+    except Exception as e:
+        print(f"[proxy] body parse failed (passthrough): {e}", file=sys.stderr)
+        return body
+    if isinstance(parsed, dict):
+        if "grammar" in parsed:
+            del parsed["grammar"]
+        if _CFG.enabled_stages:
+            parsed, stats = minify_request(parsed, _CFG)
+            print(f"[proxy] minify: {stats.summary()}", file=sys.stderr)
+        return jdumps(parsed)
+    return body
+
+
+# ── usage extraction from a rolling tail of the streamed response ────────────
+def _extract_usage(tail: bytes) -> tuple:
+    """Best-effort parse of usage from the response tail. Handles BOTH:
+      - SSE streams: the final `data: {...usage...}` event
+      - plain JSON:  a single body with a top-level `usage` field
+    Returns (prompt_tokens, completion_tokens). 0,0 if not found."""
+    pt, ct = 0, 0
+    # 1. SSE: find the last `data: ` line containing a usage object
+    has_data = b"\ndata:" in tail or tail.lstrip().startswith(b"data:")
+    if has_data:
+        for line in tail.split(b"\n"):
+            s = line.strip()
+            if not s.startswith(b"data:"):
+                continue
+            payload = s[5:].lstrip()
+            if b"usage" not in payload and b"_tokens" not in payload:
+                continue
+            try:
+                obj = jloads(payload)
+            except Exception:
+                continue
+            u = obj.get("usage", {}) if isinstance(obj, dict) else {}
+            if not isinstance(u, dict) or not u:
+                continue
+            pt = u.get("prompt_tokens") or u.get("input_tokens") or pt
+            ct = u.get("completion_tokens") or u.get("output_tokens") or ct
+            if pt or ct:
+                return pt, ct
+    # 2. plain JSON body with a top-level usage field
+    if not has_data:
+        try:
+            obj = jloads(tail)
+        except Exception:
+            return pt, ct
+        if isinstance(obj, dict):
+            u = obj.get("usage")
+            if isinstance(u, dict) and u:
+                pt = u.get("prompt_tokens") or u.get("input_tokens") or 0
+                ct = u.get("completion_tokens") or u.get("output_tokens") or 0
+    return pt, ct
+
+
+# ── async request handler ─────────────────────────────────────────────────────
+async def _read_request(reader: asyncio.StreamReader) -> Optional[tuple]:
+    """Read (method, path, headers, body). None on malformed/empty."""
+    try:
+        head = await reader.readuntil(b"\r\n\r\n")
+    except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ConnectionError):
+        return None
+    text = head.decode("utf-8", errors="replace")
+    lines = text.split("\r\n")
+    parts = lines[0].split(" ", 2)
+    if len(parts) < 2:
+        return None
+    method, path = parts[0].upper(), parts[1]
+    headers: Dict[str, str] = {}
+    for line in lines[1:]:
+        if not line or ":" not in line:
+            continue
+        k, v = line.split(":", 1)
+        headers[k.strip().lower()] = v.strip()
+    body = b""
+    te = headers.get("transfer-encoding", "").lower()
+    cl = headers.get("content-length")
+    if "chunked" in te:
+        # read until the terminating 0-chunk
+        term = b"\r\n0\r\n\r\n"
+        try:
+            body = await reader.readuntil(term)
+        except Exception:
+            pass
+        body = _dechunk(body or b"") or body
+    elif cl is not None:
+        try:
+            body = await reader.readexactly(int(cl))
+        except Exception:
+            pass
+    return method, path, headers, body
+
+
+def _forward_headers(headers: dict, host: str, length: int) -> dict:
+    out = {}
+    for k, v in headers.items():
+        if k in _HOP_BY_HOP:
+            continue
+        if k == "user-agent":
+            out["User-Agent"] = f"slimtoken/{__version__}"
+        else:
+            # preserve original case-ish
+            out[k] = v
+    out["Host"] = host
+    out["Content-Length"] = str(length)
+    out["Connection"] = "close"
     return out
 
 
-class Handler:
-    def __init__(self, conn, addr, upstream: Upstream):
-        self.conn = conn
-        self.addr = addr
-        self.upstream = upstream
+async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
+                   client: httpx.AsyncClient, upstream: Upstream, req_id: int):
+    ctx = RequestContext(request_id=req_id, t0=time.perf_counter())
+    try:
+        req = await _read_request(reader)
+        if req is None:
+            return
+        method, path, headers, body = req
+        ctx.t1 = time.perf_counter()
 
-    def handle(self):
-        try:
-            req = self._read_request()
-            if not req:
-                return
-            method, path, headers, body = req
-            if method == "GET" and path == "/metrics":
-                m = _metrics_json().encode()
-                head = ("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-                        f"Content-Length: {len(m)}\r\n\r\n").encode() + m
-                self._write_raw(head)
-                return
-            if method == "POST":
-                self._forward_post(method, path, headers, body)
-            else:
-                self._forward_passthrough(method, path, headers, body)
-        except Exception as e:
-            print(f"[proxy] handle error: {e}", file=sys.stderr)
-        finally:
-            try:
-                self.conn.close()
-            except Exception:
-                pass
+        if method == "GET" and path == "/metrics":
+            m = _metrics_json().encode()
+            head = (f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                    f"Content-Length: {len(m)}\r\nConnection: close\r\n\r\n").encode() + m
+            writer.write(head)
+            await writer.drain()
+            return
 
-    # ── low-level socket IO ────────────────────────────────────────────────────
-    def _recv_until(self, marker: bytes, cap: int = 1 << 20) -> Optional[bytes]:
-        buf = b""
-        while marker not in buf:
-            chunk = self.conn.recv(65536)
-            if not chunk:
-                return None
-            buf += chunk
-            if len(buf) > cap:
-                return None
-        return buf
-
-    def _write_raw(self, data: bytes):
-        try:
-            self.conn.sendall(data)
-        except Exception:
-            pass
-
-    def _read_request(self) -> Optional[Tuple[str, str, Dict, bytes]]:
-        buf = self._recv_until(b"\r\n\r\n")
-        if buf is None:
-            return None
-        head, body = buf.split(b"\r\n\r\n", 1)
-        text = head.decode("utf-8", errors="replace")
-        lines = text.split("\r\n")
-        parts = lines[0].split(" ", 2)
-        if len(parts) < 2:
-            return None
-        method, path = parts[0].upper(), parts[1]
-        headers: Dict[str, str] = {}
-        order = []
-        for line in lines[1:]:
-            if ":" not in line:
-                continue
-            k, v = line.split(":", 1)
-            k = k.strip().lower()
-            headers[k] = v.strip()
-            order.append(k)
-        # Read full body.
-        te = headers.get("transfer-encoding", "").lower()
-        cl = headers.get("content-length")
-        if "chunked" in te:
-            term = b"\r\n0\r\n\r\n"
-            while term not in body:
-                chunk = self.conn.recv(65536)
-                if not chunk:
-                    break
-                body += chunk
-            body = _dechunk(body) or body
-        elif cl is not None:
-            need = int(cl)
-            while len(body) < need:
-                chunk = self.conn.recv(min(65536, need - len(body)))
-                if not chunk:
-                    break
-                body += chunk
-        return method, path, headers, body
-
-    # ── POST forwarding (minify) ───────────────────────────────────────────────
-    def _minify_body(self, body: bytes) -> bytes:
-        try:
-            parsed = json.loads(body)
-        except Exception as e:
-            print(f"[proxy] body parse failed (passthrough): {e}", file=sys.stderr)
-            return body
-        if isinstance(parsed, dict):
-            if "grammar" in parsed:
-                del parsed["grammar"]
-            if _CFG.enabled_stages:
-                parsed, stats = minify_request(parsed, _CFG)
-                print(f"[proxy] minify: {stats.summary()}", file=sys.stderr)
-            return json.dumps(parsed).encode()
-        return body
-
-    def _forward_post(self, method, path, headers, body):
-        body = self._minify_body(body)
-        if self.upstream.tls:
-            self._forward_cloud(method, path, headers, body)
+        # optimize (or fast-path passthrough, unparsed)
+        if method == "POST" and not _is_fast_path(body):
+            out_body = _minify_body(body)
         else:
-            self._forward_local(method, path, headers, body)
+            out_body = body
+        ctx.t2 = time.perf_counter()
 
-    def _forward_local(self, method, path, headers, body):
-        """Raw-socket path for a local http upstream — lowest-latency SSE."""
-        # Build the forwarded request.
-        out = [f"{method} {path} HTTP/1.1"]
-        for k, v in headers.items():
-            if k in ("host", "content-length", "transfer-encoding", "expect",
-                     "connection"):
-                continue
-            if k == "user-agent":
-                out.append(f"User-Agent: slimtoken/{__version__}")
-            else:
-                out.append(f"{k}: {v}")
-        out.append(f"Host: {self.upstream.host}:{self.upstream.port}")
-        out.append(f"Content-Length: {len(body)}")
-        out.append("Connection: close")
-        head = ("\r\n".join(out) + "\r\n\r\n").encode()
-        data = head + body
+        url = upstream.base_url + path
+        fwd = _forward_headers(headers, f"{upstream.host}:{upstream.port}", len(out_body))
+
+        # forward + stream response back to the client. aiter_bytes() yields
+        # DECOMPRESSED bytes (httpx auto-decodes content-encoding), so we strip
+        # content-encoding/length/TE upstream and re-emit with Connection: close
+        # (HTTP/1.1 allows a body delimited by connection close).
+        tail = bytearray()  # rolling tail for usage extraction (capped)
+        first = True
         try:
-            dst = self.upstream.connect_raw()
-        except Exception as e:
-            self._write_raw(b'HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n')
-            print(f"[proxy] upstream connect failed: {e}", file=sys.stderr)
-            return
-        try:
-            dst.sendall(data)
-        except Exception as e:
-            print(f"[proxy] upstream send failed: {e}", file=sys.stderr)
-            dst.close()
-            return
-        self._relay_and_track(dst, body)
+            async with client.stream(method, url, content=out_body, headers=fwd,
+                                      timeout=httpx.Timeout(600.0, connect=10.0)) as resp:
+                out_h = [f"HTTP/1.1 {resp.status_code} {resp.reason_phrase}\r\n"]
+                for k, v in resp.headers.items():
+                    if k.lower() in ("transfer-encoding", "connection",
+                                     "content-length", "content-encoding"):
+                        continue
+                    out_h.append(f"{k}: {v}\r\n")
+                out_h.append("Connection: close\r\n")
+                writer.write(("".join(out_h) + "\r\n").encode())
+                await writer.drain()
 
-    def _forward_cloud(self, method, path, headers, body):
-        """http.client path for a cloud https upstream (native TLS)."""
-        import http.client
-        # Sanitize headers for the cloud API.
-        fwd = {}
-        for k, v in headers.items():
-            if k in ("host", "content-length", "transfer-encoding", "expect",
-                     "connection"):
-                continue
-            fwd[k] = v
-        fwd["content-length"] = str(len(body))
-        conn = self.upstream.https_connection()
-        t0 = time.time()
-        try:
-            conn.request(method, path, body=body, headers=fwd)
-            resp = conn.getresponse()
-            # Relay status + headers + streamed body to the client.
-            status_line = f"HTTP/1.1 {resp.status} {resp.reason}\r\n"
-            out_headers = [status_line]
-            for k, v in resp.getheaders():
-                if k.lower() in ("transfer-encoding", "connection"):
-                    continue
-                out_headers.append(f"{k}: {v}")
-            out_headers.append("Connection: close\r\n")
-            self._write_raw(("\r\n".join(out_headers) + "\r\n").encode())
-            buf = b""
-            while True:
-                chunk = resp.read(65536)
-                if not chunk:
-                    break
-                self.conn.sendall(chunk)
-                buf += chunk
-            self._track_usage(buf, time.time() - t0)
-        except Exception as e:
-            self._write_raw(b'HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n')
-            print(f"[proxy] cloud forward failed: {e}", file=sys.stderr)
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-    def _forward_passthrough(self, method, path, headers, body):
-        """Non-POST (e.g. GET /health) — forward without minify."""
-        self._forward_local(method, path, headers, body)
-
-    # ── response relay + token tracking ───────────────────────────────────────
-    def _relay_and_track(self, dst, req_body):
-        stop = threading.Event()
-        resp_buf: list = []
-        def pump():
-            while not stop.is_set():
-                r, _, _ = select.select([dst], [], [], 0.3)
-                if r:
-                    data = dst.recv(65536)
-                    if not data:
+                # output filter (max_tokens / stop enforcement). Inert (None)
+                # when neither SLIMTOKEN_MAX_TOKENS nor SLIMTOKEN_STOP is set —
+                # then we stream raw bytes with zero per-chunk overhead.
+                out_filter = _OUT_FILTER
+                async for chunk in resp.aiter_bytes():
+                    if not chunk:
+                        continue
+                    if first:
+                        ctx.t3 = time.perf_counter()
+                        first = False
+                    emit = out_filter.feed(chunk) if out_filter is not None else chunk
+                    if emit:
+                        writer.write(emit)
+                        await writer.drain()
+                    if out_filter is not None and out_filter._closed:
                         break
-                    self.conn.sendall(data)
-                    resp_buf.append(data)
-        t = threading.Thread(target=pump, daemon=True)
-        t.start()
-        t0 = time.time()
+                    # rolling tail (keep last 16 KB for usage extraction)
+                    tail += chunk
+                    if len(tail) > 16384:
+                        del tail[:-16384]
+                if out_filter is not None and not out_filter._closed:
+                    tail_emit = out_filter.finish()
+                    if tail_emit:
+                        writer.write(tail_emit)
+                        await writer.drain()
+        except httpx.RequestError as e:
+            err = b'HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'
+            writer.write(err)
+            await writer.drain()
+            print(f"[proxy] upstream error: {e}", file=sys.stderr)
+            return
+
+        ctx.t4 = time.perf_counter()
+        elapsed = ctx.t4 - ctx.t0
+        pt, ct = _extract_usage(bytes(tail))
+        ctx.pt, ctx.ct = pt, ct
+        if ct or pt:
+            _record(pt, ct, elapsed, ctx.lat())
+            tok_s = round(ct / (ctx.t4 - ctx.t3), 1) if ctx.t4 > ctx.t3 else 0
+            print(f"[proxy] #{req_id} {pt}in->{ct}out ({tok_s} tok/s) "
+                  f"ingress={ctx.t1-ctx.t0:.3f}s opt={ctx.t2-ctx.t1:.3f}s "
+                  f"ttft={ctx.t3-ctx.t2:.3f}s gen={ctx.t4-ctx.t3:.3f}s",
+                  file=sys.stderr)
+        else:
+            print(f"[proxy] #{req_id} no-usage ingress={ctx.t1-ctx.t0:.3f}s "
+                  f"opt={ctx.t2-ctx.t1:.3f}s ttft={(ctx.t3-ctx.t2) if ctx.t3 else 0:.3f}s",
+                  file=sys.stderr)
+    except Exception as e:
+        print(f"[proxy] handle error: {e}", file=sys.stderr)
+    finally:
         try:
-            while True:
-                r, _, _ = select.select([self.conn], [], [], 0.5)
-                if r:
-                    data = self.conn.recv(65536)
-                    if not data:
-                        break
-                    dst.sendall(data)
+            writer.close()
+            await writer.wait_closed()
         except Exception:
             pass
-        finally:
-            stop.set()
-            t.join(timeout=3)
-            self._track_usage(b"".join(resp_buf), time.time() - t0)
-            try:
-                dst.close()
-            except Exception:
-                pass
 
-    def _track_usage(self, resp_bytes: bytes, elapsed: float):
-        if not resp_bytes:
-            return
-        text = resp_bytes.decode("utf-8", errors="replace")
-        pt, ct = 0, 0
-        for line in text.split("\n"):
-            if "usage" in line.lower() or "completion_tokens" in line:
-                try:
-                    if line.startswith("data: "):
-                        line = line[6:]
-                    usage = json.loads(line).get("usage", {})
-                    pt = usage.get("prompt_tokens", 0) or pt
-                    ct = usage.get("completion_tokens", 0) or ct
-                except Exception:
-                    pass
-        if ct:
-            _record_tokens(pt, ct, elapsed)
-            tok_s = round(ct / elapsed, 1) if elapsed > 0 else 0
-            print(f"[proxy] tokens: {pt} in -> {ct} out ({tok_s} tok/s, {elapsed:.1f}s)",
-                  file=sys.stderr)
+
+# ── server ────────────────────────────────────────────────────────────────────
+def _maybe_uvloop():
+    try:
+        import uvloop  # noqa: F401
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+        return True
+    except Exception:
+        return False
 
 
 def main():
     port = int(os.environ.get("SLIMTOKEN_PORT", os.environ.get("PORT", "8181")))
     upstream = Upstream.from_env()
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    bound = False
-    for attempt in range(20):
+    uv = _maybe_uvloop()
+
+    limits = httpx.Limits(max_keepalive_connections=64, max_connections=512)
+    client = httpx.AsyncClient(
+        http2=_bool_env("SLIMTOKEN_HTTP2", False),
+        limits=limits, timeout=httpx.Timeout(600.0, connect=10.0),
+        trust_env=False)
+
+    req_counter = 0
+
+    async def handler(reader, writer):
+        nonlocal req_counter
+        req_counter += 1
+        await _handle(reader, writer, client, upstream, req_counter)
+
+    async def serve():
+        server = await asyncio.start_server(handler, "127.0.0.1", port, backlog=64)
+        bound = server.sockets[0].getsockname()
+        print(f"[proxy] slimtoken v{__version__} listening on {bound[0]}:{bound[1]} "
+              f"-> {upstream.base_url} (tls={upstream.tls}, uvloop={uv}, http2={_bool_env('SLIMTOKEN_HTTP2', False)})",
+              file=sys.stderr)
+        print(f"[proxy] minify stages: {sorted(_CFG.enabled_stages) or 'OFF'}", file=sys.stderr)
         try:
-            server.bind(("127.0.0.1", port))
-            bound = True
-            break
-        except OSError as e:
-            if e.errno != errno.EADDRINUSE:
-                raise
-            print(f"[proxy] :{port} busy (attempt {attempt+1}/20)", file=sys.stderr)
-            time.sleep(0.5)
-    if not bound:
-        raise OSError(errno.EADDRINUSE, f"port {port} in use")
-    server.listen(16)
-    print(f"[proxy] slimtoken v{__version__} listening on 127.0.0.1:{port} "
-          f"-> {upstream.base_url} (tls={upstream.tls})", file=sys.stderr)
-    print(f"[proxy] minify stages: {sorted(_CFG.enabled_stages) or 'OFF'}", file=sys.stderr)
+            async with server:
+                await server.serve_forever()
+        finally:
+            await client.aclose()
+
     try:
-        while True:
-            conn, addr = server.accept()
-            threading.Thread(
-                target=Handler(conn, addr, upstream).handle, daemon=True).start()
+        asyncio.run(serve())
     except KeyboardInterrupt:
         print("[proxy] shutting down", file=sys.stderr)
-    finally:
-        server.close()
 
 
 if __name__ == "__main__":

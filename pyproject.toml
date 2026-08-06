@@ -4,15 +4,29 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "slimtoken"
-version = "0.2.0"
-description = "A standalone, all-on-by-default token-optimization layer: minifies LLM requests (tools, system, messages — code-fence aware), collapses duplicate tool results, distills old turns, and prunes to a token budget. Drop-in HTTP(S) proxy via ANTHROPIC_BASE_URL; coexists with cortexllm/cortexagent. Pure stdlib at runtime."
+version = "0.3.0"
+description = "A standalone, all-on-by-default token-optimization layer: minifies LLM requests (tools, system, messages — code-fence aware), collapses duplicate tool results, distills old turns, prunes to a token budget, and type-compresses tool output. Drop-in async HTTP(S) proxy via ANTHROPIC_BASE_URL; ships with orjson/xxhash/tiktoken for fast JSON, hashing, and real token counting."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "MIT"
 authors = [{name = "greyok00"}]
-keywords = ["llm", "anthropic", "proxy", "minify", "context", "llama-server"]
-dependencies = []  # pure stdlib at runtime
+keywords = ["llm", "anthropic", "proxy", "minify", "context", "llama-server", "async"]
+dependencies = [
+    "httpx>=0.27",
+    "orjson>=3.9",
+    "xxhash>=3.0",
+    "tiktoken>=0.7",
+]
+
+[project.optional-dependencies]
+uvloop = ["uvloop>=0.19"]  # optional faster event loop (linux/mac)
 
 [project.scripts]
 slimtoken = "slimtoken.cli:main"
 slimtoken-serve = "slimtoken.proxy:main"
+
+[tool.setuptools.package-data]
+slimtoken = ["data/*.tiktoken"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

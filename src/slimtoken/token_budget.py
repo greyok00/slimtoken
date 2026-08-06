@@ -6,21 +6,19 @@ strict. So budget enforcement drops a CONTIGUOUS LEADING prefix of messages
 that never splits a tool_use/tool_result pair, and always preserves the most
 recent ``keep_last`` messages. If the leading messages are themselves tool
 exchanges we can't safely drop, we drop nothing and just report over-budget.
+
+Counting: delegated to :mod:`slimtoken.tokencount` — a real cl100k_base
+tokenizer (cached by content hash) that NEVER serializes the whole body. The
+budget search uses per-message prefix sums, so each candidate drop count is an
+O(1) subtraction rather than a full re-serialize. (The old code re-serialized
+the entire body once per candidate — an N-way hidden tax.)
 """
 from __future__ import annotations
 
-import json
 from typing import Dict, List
 
-from .context_prune import estimate_tokens
-
-
-def estimate_tokens_obj(obj) -> int:
-    """Estimate tokens for any JSON-serializable object."""
-    try:
-        return estimate_tokens(json.dumps(obj))
-    except Exception:
-        return 0
+from .tokencount import (count_messages, count_obj, count_system, count_tools,
+                         estimate_tokens_obj, message_prefix_sums)
 
 
 def _has_tool_use(msg) -> bool:
@@ -98,11 +96,15 @@ def enforce_budget(body: dict, token_budget: int, keep_last: int = 8,
     msgs = body.get("messages")
     if not isinstance(msgs, list) or len(msgs) <= keep_last:
         return body
-    total = estimate_tokens_obj(body)
+    # One-time structural count — no whole-body serialize, no per-candidate tax.
+    sys_tok = count_system(body.get("system"))
+    tools_tok = count_tools(body.get("tools"))
+    msg_total, per_msg = count_messages(msgs)
+    prefix = message_prefix_sums(per_msg)
+    total = sys_tok + tools_tok + msg_total
     if total <= token_budget:
         return body
 
-    msgs = list(msgs)
     k_max = len(msgs) - keep_last
     valid = list(_valid_drop_points(msgs, k_max))
     if not valid:
@@ -110,23 +112,21 @@ def enforce_budget(body: dict, token_budget: int, keep_last: int = 8,
 
     nb = dict(body)
     # Prefer the SMALLEST safe drop that gets under budget (preserve context).
-    # If none gets under budget, use the LARGEST safe drop (best-effort).
+    # new_total after dropping first k = total - prefix[k]  (O(1) per candidate).
     chosen = None
     for k in sorted(valid):
         if k == 0:
             continue
-        nb["messages"] = msgs[k:]
-        if estimate_tokens_obj(nb) <= token_budget:
+        if (total - prefix[k]) <= token_budget:
             chosen = k
             break
     if chosen is None:
-        chosen = max(valid)
-        nb["messages"] = msgs[chosen:]
+        chosen = max(valid)  # best-effort: largest safe drop
     if chosen <= 0:
         return body
-    new_total = estimate_tokens_obj(nb)
+    nb["messages"] = msgs[chosen:]
     if stats is not None:
         stats["budget_dropped"] = chosen
         stats["budget_tokens_before"] = total
-        stats["budget_tokens_after"] = new_total
+        stats["budget_tokens_after"] = total - prefix[chosen]
     return nb
