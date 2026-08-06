@@ -1,164 +1,157 @@
 # slimtoken
 
-**A token-optimization proxy that shrinks what you send to an LLM — before it's sent. Every feature is ON by default. Zero config required.**
+**A token-optimization proxy that shrinks what you send to an LLM — before it's sent. Every feature is ON by default. Zero config. MIT-licensed, pure Python, runs anywhere.**
 
 Every request your coding agent makes — tool schemas, system prompt, chat
-history — is minified, de-duplicated, and distilled in pure stdlib, then
-forwarded to your local llama-server *or* a cloud API. Fewer tokens in means
-faster prompt-eval, lower cost, and more room for context. Drop it in by
-pointing `ANTHROPIC_BASE_URL` (or any Anthropic-compatible client's base URL)
-at it.
+history — is minified, de-duplicated, and distilled, then forwarded to your local
+llama-server *or* a cloud API. Fewer tokens in means faster prompt-eval, lower
+cost, and more room for context. Drop it in by pointing `ANTHROPIC_BASE_URL` (or
+any Anthropic-compatible client's base URL) at it.
 
-It works the moment you install it. **There is nothing to enable, no flags to
-set, no config file to write.** Every optimization below runs by default. The
-only knobs that exist are *opt-out* kill-switches (set an env var to `0` to
-turn something off) — you never need them. A separate, **optional**
-`config-optimizer` script can additionally tune your *backend* (llama-server)
-to your hardware; that's the only "extra" step, and it too is opt-in.
+It works the moment you install it. **Nothing to enable, no flags, no config
+file.** Every optimization runs by default; the only env vars that exist are
+*opt-out* kill-switches you never need. An optional `config-optimizer` script can
+additionally tune your *backend* to your hardware, and an optional `build-speed.sh`
+can compile the package to native code — both opt-in.
 
----
-
-## ✨ Why slimtoken
-
-| Problem slimtoken solves | What happens without it |
-|--------------------------|-------------------------|
-| 30 verbose tool schemas re-sent every request | Wasted prompt tokens, slow eval |
-| The same big file re-read every turn | Context fills with duplicates |
-| Long old explanations still in full | Old prose crowds out new context |
-| Whitespace / boilerplate bloat | Free tokens left on the table |
-| Coding-agent history grows unbounded | OOMs / cost spikes on long sessions |
+- 🟢 **MIT-licensed, pure stdlib** — no runtime dependencies; runs on any Python 3.9+ / any OS.
+- 🟢 **Clean install / clean uninstall** — only touches `ANTHROPIC_BASE_URL` in your shell rc (backed up + restored). Never touches `settings.json`, `CLAUDE.md`, or `mcp.json`.
+- 🟢 **Works with or without** CortexAgent / CortexLLM (distinct ports + env, coexists).
 
 ---
 
 ## 📦 All features (all ON by default)
 
-| # | Feature | What it does | On by default? |
-|--:|---------|--------------|:--------------:|
-| 1 | **Tool minify** | Strips boilerplate from tool `description`s, drops `$comment`/`title`/`examples`, keeps `name`/`required`/`enum`/`type`/structure verbatim | ✅ |
-| 2 | **System minify** | Fence-aware whitespace collapse on the system prompt; preserves `<tag>` memory markers + code fences byte-identical | ✅ |
-| 3 | **Message minify** | Collapses blank-line runs + trailing whitespace in chat text; passes tool_use/tool_result/image blocks through untouched | ✅ |
-| 4 | **Dedup tool results** | Collapses repeated `tool_result` contents; latest kept verbatim, older duplicates stubbed (SHA-256 content hash) | ✅ |
+| # | Feature | What it does | Default |
+|--:|---------|--------------|:------:|
+| 1 | **Tool minify** | Strips boilerplate from tool `description`s (keeps first fenced example), drops `$comment`/`title`/`examples`; keeps `name`/`required`/`enum`/`type`/structure verbatim | ✅ |
+| 2 | **System minify** | Fence-aware whitespace collapse; preserves `<tag>` memory markers + code fences byte-identical; collapses duplicate banner lines | ✅ |
+| 3 | **Message minify** | Collapses blank-line runs + trailing whitespace in chat text; passes tool_use / tool_result / image blocks through untouched | ✅ |
+| 4 | **Dedup tool results** | Collapses repeated `tool_result` contents (same big file re-read each turn); latest kept verbatim, older duplicates stubbed (SHA-256 content hash) | ✅ |
 | 5 | **Distill old turns** *(prompt pruning)* | Extractive summaries of old assistant prose beyond the last 8 turns; fence-aware, preserves tool blocks, **no model call** | ✅ |
-| 6 | **Token budget** | Generous backstop (default 131 072); only catches pathological bloat, never normal sessions | ✅ |
+| 6 | **Token budget** | Generous backstop (131 072); only catches pathological bloat, never normal sessions | ✅ |
 | 7 | **Drop-in proxy** | Sits in front of any Anthropic-compatible backend via `ANTHROPIC_BASE_URL`; local HTTP or cloud HTTPS | ✅ |
-| 8 | **Grammar strip** | Removes redundant schema grammar that the model already infers | ✅ |
-| 9 | **Metrics** | `GET /metrics` exposes per-stage token savings + counts | ✅ |
+| 8 | **Grammar strip** | Drops the `grammar` field the model already infers | ✅ |
+| 9 | **Metrics** | `GET /metrics` exposes token savings + counts | ✅ |
 | 10 | **TLS** | Native TLS for cloud HTTPS upstreams (SNI; optional mTLS / insecure) | ✅ |
 | 11 | **Lazy MCP** | One stub tool per configured MCP server; spawns the real server on call (config-driven, empty config = no-op) | ✅ |
-| 12 | **Code-fence aware** | ` ``` ` code blocks are **byte-identical** in/out; malformed fences over-preserve (safe) | ✅ |
+| 12 | **Code-fence aware** | ` ``` ` blocks are **byte-identical** in/out; malformed fences over-preserve (safe) | ✅ |
 | 13 | **Pair-safe pruning** | Never orphans a `tool_result` from its `tool_use`; valid drop points only | ✅ |
 | 14 | **Overhead-optimized** | Identity-based change detection — unchanged content returns the original object, zero-copy | ✅ |
-| 15 | **Cython-compiled** | All 15 modules ship as native `.so`; protects source + speeds the hot path | ✅ |
-| 16 | **Clean install / uninstall** | Only touches `ANTHROPIC_BASE_URL` in your shell rc (backed up + restored); never touches `settings.json`, `CLAUDE.md`, or `mcp.json` | ✅ |
-| 17 | **Config optimizer** *(optional)* | A separate script that tunes your *backend* (llama-server) to your GPU/model — safe, system-specs-based. **Optional**, see §"Going further" | ⚙️ optional |
+| 15 | **Optional Cython build** | `scripts/build-speed.sh` compiles every module to native `.so` on your machine | ⚙️ opt-in |
+| 16 | **Clean install / uninstall** | Reversible rc wiring; never touches agent config files | ✅ |
+| 17 | **Config optimizer** *(optional)* | `slimtoken config-optimizer` recommends llama-server args for your GPU/model (safe, recommend-only) | ⚙️ opt-in |
 
-> **No opt-in.** Features 1–16 have no "enable" flag. The only env vars that
-> exist set a value to `0` to *disable* a stage (e.g. `SLIMTOKEN_MINIFY_TOOLS=0`)
-> — you never need to set any of them. Defaults are the recommended config.
+> **No opt-in.** Features 1–14 + 16 have no "enable" flag — only opt-out kill-switches
+> (`SLIMTOKEN_MINIFY_*=0`). Defaults are the recommended config.
 
 ---
 
-## 🔧 How optimized it works *by default*
+## ⚡ How much faster? (measured, honestly)
 
-Measured against the **compiled `.so`** (reproduce with
-`python3 bench/benchmark.py`). Numbers are honest and reproducible — no
-fabrication, no cherry-picking.
+Reproduce with `python3 bench/benchmark.py` (and `--backend http://127.0.0.1:8082`
+for the end-to-end number). No fabrication, no cherry-picking.
 
-### 1. Payload reduction — fewer tokens sent (default config = all stages ON)
+### 1. Each feature on/off — tokens saved (≈ prompt-eval speedup)
+
+The dominant speed lever is **sending fewer tokens**: prompt-eval time on the
+backend scales with input tokens, so X% fewer tokens ≈ ~X% faster prompt-eval.
+Medium payload, each stage alone vs. original:
+
+| Stage ON (alone) | Tokens | Saved | Reduction |
+|------------------|-------:|------:|----------:|
+| (nothing)         | 2,590 |     0 |     0.0% |
+| + tools           | 2,225 |   365 |    14.1% |
+| + system          | 2,585 |     5 |     0.2% |
+| + messages        | 2,565 |    25 |     1.0% |
+| + dedup           | 2,590 |     0 |     0.0% |
+| + distill         | 2,590 |     0 |     0.0% |
+| **all (default)** | **2,196** | **394** | **15.2%** |
+
+`tools` does the heavy lifting on a normal request. `dedup` + `distill` read 0%
+on a *medium* payload because there's nothing to dedup and nothing old enough to
+distill — they earn their keep on **bloated** sessions (see next table).
+
+### 2. Payload reduction — default config (all stages ON)
 
 | Payload | Raw tokens | Default out | Saved |
-|---------|-----------:|------------:|-----:|
+|---------|-----------:|------------:|------:|
 | small   |      1,069 |         935 | 12.5% |
 | medium  |      2,590 |       2,196 | 15.2% |
 | large   |      4,802 |       4,039 | 15.9% |
 | **bloated** | **38,596** |   **7,200** | **81.3%** |
 
-- **Normal sessions**: ~13–16% smaller requests, automatically, out of the box.
-- **Bloated sessions** (the same big file re-read every turn + long verbose
-  explanations every turn): **81.3% smaller** — this is where `dedup` +
-  `distill` (the prompt pruner) earn their keep.
+"Bloated" = the same big file re-read every turn + a long verbose explanation
+every turn — exactly what real coding-agent sessions accumulate. `dedup`
+collapses the repeated file reads and `distill` (prompt pruning) compresses the
+old verbose prose → **81.3% smaller**.
 
-### 2. Proxy overhead — what the minify pipeline *costs*
+### 3. Proxy overhead — what the pipeline *costs*
 
-| Metric | Value (large payload, n=80) |
-|--------|-----------------------------|
-| median | **~3 ms** |
-| p95    | ~4 ms |
+| Mode | median | p95 |
+|------|-------:|----:|
+| pure Python (default) | ~2.9 ms | ~3.9 ms |
+| Cython `.so` (optional) | ~3.0 ms | ~5.0 ms |
 
-The pipeline adds single-digit milliseconds. On any real LLM round-trip that is
-noise. Identity-based change detection means unchanged content is returned
-zero-copy (no JSON re-serialization).
+Single-digit milliseconds — noise next to any LLM round-trip. The optional
+Cython build compiles the hot path to native code, but **on this pure-stdlib
+workload it's within run-to-run noise of pure Python** (sometimes slightly
+*slower*: Cython's p95 is higher here). The code is already fast interpreted; the
+real speedup comes from sending fewer tokens, not from compiling the proxy. The
+Cython build is there for those who want native code / other Python versions.
 
-### 3. End-to-end against a real backend
+### 4. Fully optimized — all stages + real backend
 
-Sent the **same** Anthropic payload (with tools) raw-direct vs. optimized-through-the-proxy to a live llama-server backend, and read the model's own reported `input_tokens`:
+Same Anthropic payload (with tools) sent RAW-direct vs OPTIMIZED-through-the-proxy
+to a live llama-server; the model's own reported `input_tokens`:
 
 | Metric | Raw | Optimized | Saved |
 |--------|----:|----------:|------:|
 | input tokens (median) | 1,164 | 1,028 | **11.7%** |
 
-The model itself reports 11.7% fewer tokens actually processed — real money
-and real prompt-eval time saved, on top of an already-optimized backend.
+The model itself reports **11.7% fewer tokens actually processed** — real
+prompt-eval time and cost saved on top of an already-optimized backend. That's
+the combined effect of all minify stages working together.
+
+### What "fully optimized" stacks
+
+| Layer | What it speeds up | Measured effect |
+|-------|---------------------|-----------------|
+| Minify stages (default) | tokens sent → backend prompt-eval | 12.5–81.3% fewer tokens |
+| Optional `config-optimizer` | the *backend* (llama-server `--ctx`/`--ubatch`/`-ngl` for your VRAM) | larger ctx / no OOM (recommend-only) |
+| Optional `build-speed.sh` (Cython) | proxy hot path | ~3 ms either way (within noise here) |
+| **Combined real-world** | **e2e vs raw backend** | **11.7% fewer input tokens** |
 
 > Reproduce: `python3 bench/benchmark.py --backend http://127.0.0.1:8082`
 
 ---
 
-## ⚙️ Going further — the OPTIONAL config-optimizer
+## ⚙️ Going further — the two optional levers
 
-Everything above is what you get for free, by default. If you also run your
-**own llama-server backend**, `slimtoken config-optimizer` can additionally
-tune that backend to your hardware. This is **optional** and **safe**:
-
-```bash
-slimtoken config-optimizer
-```
-
-It inspects your system specs (available VRAM, model file size) and recommends
-llama-server arguments (`--ctx`, `--ubatch`, `--n-gpu-layers`, cache sizes,
-weights) sized to fit your GPU without OOMing. It **only recommends** — it
-prints the command, it does not silently change anything. It also surfaces the
-`CORTEXAGENT_*` exports that the CortexAgent stack expects, but those are just
-passed through; slimtoken does not depend on CortexAgent.
-
-| | Default slimtoken (proxy) | + optional `config-optimizer` |
-|--|----------------------------|--------------------------------|
-| What it tunes | The **request** (tokens sent) | The **backend** (llama-server args) |
-| Required? | No — works at install | No — fully optional |
-| Risk | Read-only on requests | Recommends only; you review + run |
-| Extra gain | 13–81% fewer tokens | Larger ctx / faster eval / no OOM |
-
-The two layers are independent and stack: the proxy shrinks *what you send*,
-the config-optimizer tunes *what receives it*.
-
----
-
-## 🛡️ Compiled, not interpreted
-
-slimtoken ships as **native compiled code** (`.so`), not pure Python. Every one
-of the 15 modules is compiled with Cython at build time. There is **no
-pure-Python fallback** — if Cython or a C compiler is unavailable, the build
-fails with a clear message rather than silently shipping slow, readable source.
-
-This does two things:
-
-- **Speeds the hot path** — the minify pipeline runs against native code, not
-  interpreted bytecode (the ~3 ms overhead above is the compiled result).
-- **Protects the source** — the readable `.py` is not what runs. The installed
-  wheel contains only `.so` files: **15 `.so`, 0 `.py`, 0 `.c`**.
+Everything above is what you get for free, by default. Two **optional** scripts
+add more — both are opt-in and safe:
 
 ```bash
-python3 setup.py build_ext --inplace   # .so next to .py (dev / tests vs .so)
-pip install .                          # installs the compiled package
-pip wheel .                             # builds a .so-only wheel
+slimtoken config-optimizer     # recommends llama-server args for your GPU+model
+bash scripts/build-speed.sh     # compiles slimtoken to native .so on your machine
 ```
+
+| | Default (proxy) | + `config-optimizer` | + `build-speed.sh` |
+|--|------------------|----------------------|--------------------|
+| Tunes | the **request** (tokens sent) | the **backend** (llama-server args) | the **proxy** (native compile) |
+| Risk | read-only on requests | recommend-only; you review + run | local build; needs gcc+Cython |
+| Gain | 12.5–81.3% fewer tokens | bigger ctx / faster eval / no OOM | ~3ms either way (within noise here) |
+
+The three layers stack and are independent: the proxy shrinks *what you send*,
+the config-optimizer tunes *what receives it*, the build script compiles *the
+proxy itself*.
 
 ---
 
 ## 🚀 Quick start
 
 ```bash
-# 1. install (compiles to .so, wires ANTHROPIC_BASE_URL — reversible)
+# 1. install (pure Python, compiles nothing, wires ANTHROPIC_BASE_URL — reversible)
 bash scripts/install.sh
 
 # 2. start the proxy pointing at your backend
@@ -166,11 +159,16 @@ slimtoken serve --upstream http://127.0.0.1:8082      # local llama-server
 # or
 slimtoken serve --upstream https://api.anthropic.com   # cloud
 
-# 3. use your agent as normal — requests are now minified automatically
-#    (point your tool's base URL at the proxy if it isn't already)
+# 3. use your agent as normal — requests are minified automatically
 ```
 
-That's it. No config file, no enable flags. It's already doing everything.
+No config file, no enable flags. It's already doing everything.
+
+### Optional: make it native code
+
+```bash
+bash scripts/build-speed.sh     # compiles to .so for your Python (needs gcc + Cython)
+```
 
 ### Verify it's working
 
@@ -181,24 +179,21 @@ curl -s http://127.0.0.1:8181/metrics   # per-stage token savings + counts
 ### Uninstall (clean — restores your prior base URL)
 
 ```bash
-bash scripts/uninstall.sh
-# or
-slimtoken uninstall
+bash scripts/uninstall.sh        # or: slimtoken uninstall
 ```
 
 ---
 
 ## 🔌 Lazy MCP (optional, default no-op)
 
-If you use MCP servers, slimtoken can lazily front them: it exposes one stub
-tool per configured MCP server and only spawns the real server when that tool
-is actually called. Driven by a config file (`~/.slimtoken/lazy_mcp.json` or
-`$SLIMTOKEN_LAZY_MCP_CONFIG`). **Empty config = no-op** — if you never create
-the file, lazy MCP does nothing.
+If you use MCP servers, slimtoken can lazily front them: one stub tool per
+configured MCP server, spawning the real server only when that tool is called.
+Driven by `~/.slimtoken/lazy_mcp.json` (or `$SLIMTOKEN_LAZY_MCP_CONFIG`).
+**Empty config = no-op** — if you never create the file, lazy MCP does nothing.
 
 ```bash
-slimtoken lazy-mcp smoke        # verify the loader works
-slimtoken lazy-mcp --name mysrv # spawn a configured server directly
+slimtoken lazy-mcp smoke         # verify the loader
+slimtoken lazy-mcp --name mysrv   # spawn a configured server directly
 ```
 
 ---
@@ -228,23 +223,22 @@ These are **opt-out** overrides on already-good defaults — not opt-in flags.
 ## 🧪 Tests & benchmarks
 
 ```bash
-python3 setup.py build_ext --inplace          # compile to .so first
-python3 -m pytest tests/                       # 49 checks, all vs the .so
-python3 bench/benchmark.py                      # payload + overhead
-python3 bench/benchmark.py --backend http://127.0.0.1:8082   # + end-to-end
+python3 tests/test_all.py                          # 49 checks (pure Python, or .so if built)
+SLIMTOKEN_BUILD_CYTHON=1 python3 setup.py build_ext --inplace   # build .so in-place, then re-run tests against it
+python3 bench/benchmark.py                         # payload + per-stage + overhead
+python3 bench/benchmark.py --backend http://127.0.0.1:8082      # + end-to-end
 ```
 
-49 checks pass against the compiled `.so`, including fence byte-identity,
-pair-safety (no orphaned tool results), dedup, distill, and a proxy e2e.
+49 checks pass in both pure-Python and Cython modes — fence byte-identity,
+pair-safety (no orphaned tool results), dedup, distill, default ≥50% reduction
+on a bloated payload, lazy-MCP smoke, and a proxy e2e.
 
 ---
 
 ## 📜 License
 
-**Proprietary.** Copyright (c) 2026 greyok00. All Rights Reserved. See
-[LICENSE](LICENSE). No copy, modification, distribution, or sublicense is
-granted without written permission. The compiled `.so` is the distributed
-artifact; the readable source is not licensed for redistribution.
+**MIT** — Copyright (c) 2026 greyok00. See [LICENSE](LICENSE). Do whatever you
+want, just keep the notice.
 
 ---
 
@@ -255,6 +249,6 @@ your agent  ──►  slimtoken proxy (:8181)  ──►  llama-server (:8082) 
                  [minify + dedup + distill]
 ```
 
-slimtoken is a standalone, independently-installable/removable layer. It coexists
-with CortexAgent / CortexLLM (distinct ports + env) but needs neither. Point any
-Anthropic-compatible client's base URL at it and it works.
+slimtoken is a standalone, independently-installable/removable layer. It
+coexists with CortexAgent / CortexLLM (distinct ports + env) but needs neither.
+Point any Anthropic-compatible client's base URL at it and it works.

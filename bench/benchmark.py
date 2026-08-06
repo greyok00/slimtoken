@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""benchmark — measure slimtoken's real effect (run AGAINST the compiled .so).
+"""benchmark — measure slimtoken's real effect (pure Python, or compiled .so if built).
 
 Build first: `python3 setup.py build_ext --inplace`.
 
@@ -264,7 +264,7 @@ def fmt_table(headers, rows):
 
 def report(payload, stages, overhead, e2e):
     print("=" * 66)
-    print(" slimtoken — benchmark (compiled .so)")
+    print(" slimtoken — benchmark")
     print("=" * 66)
     print("\n[1] PAYLOAD REDUCTION  (est. tokens, ~4 chars/token; DEFAULT = all stages ON)")
     print("-" * 66)
@@ -277,7 +277,7 @@ def report(payload, stages, overhead, e2e):
     print("-" * 66)
     rows = [[s["stage"], s["tokens"], s["saved"], "%.1f%%" % s["pct"]] for s in stages]
     print(fmt_table(["config", "tokens", "saved", "reduction"], rows))
-    print("\n[3] PROXY OVERHEAD  (minify pipeline only, large payload, vs compiled .so)")
+    print("\n[3] PROXY OVERHEAD  (minify pipeline only, large payload)")
     print("-" * 66)
     print("  median %s ms  ·  p95 %s ms  ·  mean %s ms   (n=%d)" % (
         overhead["median_ms"], overhead["p95_ms"], overhead["mean_ms"], overhead["runs"]))
