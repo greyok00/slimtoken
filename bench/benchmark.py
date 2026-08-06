@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""benchmark — measure slimtoken's real effect (pure Python, or compiled .so if built).
-
-Build first: `python3 setup.py build_ext --inplace`.
+"""benchmark — measure slimtoken's real effect.
 
 Reports, with no fabrication:
   1. PAYLOAD REDUCTION  — tokens in vs out, per payload size, with DEFAULT config
@@ -194,7 +192,7 @@ def bench_e2e(backend: str, n: int = 5):
     env["SLIMTOKEN_MINIFY_BUDGET"] = "0"  # keep full payload; measure minify not pruning
     src_dir = str(Path(__file__).resolve().parent.parent / "src")
     env["PYTHONPATH"] = src_dir + ":" + env.get("PYTHONPATH", "")
-    # spawn via -c so the compiled .so is used (runpy can't run extension modules)
+    # spawn the proxy as a subprocess
     proc = subprocess.Popen([sys.executable, "-u", "-c",
                              "from slimtoken.proxy import main; main()"],
                             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

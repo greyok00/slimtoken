@@ -1,8 +1,6 @@
 """test_all — pytest-free tests for slimtoken (run: python3 test_all.py).
 
-Tests run AGAINST THE COMPILED .so (build first: `python3 setup.py build_ext --inplace`).
-If the .so is absent they fall back to the pure-Python .py — but the product ships
-compiled, so build before testing.
+Tests import slimtoken from the package install (or src/ on the path).
 """
 import json
 import os
@@ -297,7 +295,7 @@ def test_lazy_mcp_smoke():
         check("lazy_mcp stub has real_tool", "real_tool" in stub["inputSchema"]["properties"])
 
 
-# ── 11. proxy e2e (local, against compiled .so) ──────────────────────────────
+# ── 11. proxy e2e (local) ──────────────────────────────────────
 def test_proxy_e2e():
     received = {}
 
@@ -349,7 +347,7 @@ def test_proxy_e2e():
                 break
             except Exception:
                 time.sleep(0.2)
-        check("proxy started (compiled .so)", ok)
+        check("proxy started", ok)
         if not ok:
             return
         payload = {"model": "t", "grammar": "x",

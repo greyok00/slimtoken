@@ -75,17 +75,11 @@ Defaults are the recommended values. Set any to `0` to disable.
 
 ```bash
 slimtoken config-optimizer          # print recommended llama-server args for your VRAM + model
-bash scripts/build-speed.sh         # compile all modules to a native .so for your Python
 ```
 
 `config-optimizer` inspects GPU VRAM and model size and recommends `--ctx`,
 `--ubatch`, `-ngl`, and cache sizes that fit without OOMing. It prints the
 command and `CORTEXAGENT_*` exports; it does not change anything itself.
-
-`build-speed.sh` compiles every module to a `.so` on your machine for your
-Python version (needs gcc + Cython). Because native code is Python-ABI-specific,
-this is a local build, not a distributed artifact. Reinstall without the env to
-restore pure Python.
 
 ## Benchmarks
 
@@ -127,12 +121,9 @@ Proxy overhead (large payload, n=80):
 | mode | median | p95 |
 |------|-------:|----:|
 | pure Python | ~2.9 ms | ~3.9 ms |
-| Cython .so | ~3.0 ms | ~5.0 ms |
 
-The optional Cython build does not meaningfully change overhead on this
-workload — the code is already fast and Cython compile without type
-annotations adds little. The speed gain comes from sending fewer tokens, not
-from compiling the proxy.
+The pipeline adds single-digit milliseconds. The speed gain comes from sending
+fewer tokens, not from the proxy itself.
 
 End-to-end (same payload with tools, raw-direct vs. through-proxy, live
 llama-server, model-reported input_tokens):
@@ -144,9 +135,7 @@ llama-server, model-reported input_tokens):
 ## Tests
 
 ```bash
-python3 tests/test_all.py                                       # 49 checks, pure Python
-SLIMTOKEN_BUILD_CYTHON=1 python3 setup.py build_ext --inplace   # build .so, then:
-python3 tests/test_all.py                                       # 49 checks, against .so
+python3 tests/test_all.py                                       # 49 checks
 ```
 
 Covers fence byte-identity, pair-safety, dedup, distill, default reduction

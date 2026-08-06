@@ -5,16 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "slimtoken"
 version = "0.2.0"
-description = "A standalone, all-on-by-default token-optimization layer: minifies LLM requests (tools, system, messages — code-fence aware), collapses duplicate tool results, distills old turns, and prunes to a token budget. Drop-in HTTP(S) proxy via ANTHROPIC_BASE_URL; coexists with cortexllm/cortexagent. Pure stdlib at runtime; optional Cython speed build."
+description = "A standalone, all-on-by-default token-optimization layer: minifies LLM requests (tools, system, messages — code-fence aware), collapses duplicate tool results, distills old turns, and prunes to a token budget. Drop-in HTTP(S) proxy via ANTHROPIC_BASE_URL; coexists with cortexllm/cortexagent. Pure stdlib at runtime."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
 authors = [{name = "greyok00"}]
-keywords = ["llm", "anthropic", "proxy", "minify", "context", "llama-server", "cython"]
+keywords = ["llm", "anthropic", "proxy", "minify", "context", "llama-server"]
 dependencies = []  # pure stdlib at runtime
-
-[project.optional-dependencies]
-speed = ["Cython>=3.0"]  # only needed for the optional compiled build (SLIMTOKEN_BUILD_CYTHON=1)
 
 [project.scripts]
 slimtoken = "slimtoken.cli:main"
