@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61", "wheel", "Cython>=3.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "slimtoken"
+version = "0.2.0"
+description = "A standalone token-optimization layer: minifies LLM requests (tools, system, messages — code-fence aware), collapses duplicate tool results, distills old turns, and ships as compiled native code. Drop-in HTTP(S) proxy via ANTHROPIC_BASE_URL; coexists with cortexllm/cortexagent."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {file = "LICENSE"}
+authors = [{name = "greyok00"}]
+keywords = ["llm", "anthropic", "proxy", "minify", "context", "llama-server", "cython"]
+dependencies = []  # pure stdlib at runtime; Cython is a build-time requirement
+
+[project.scripts]
+slimtoken = "slimtoken.cli:main"
+slimtoken-serve = "slimtoken.proxy:main"

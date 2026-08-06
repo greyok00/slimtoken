@@ -1,0 +1,87 @@
+{
+  "payload": [
+    {
+      "size": "small",
+      "in": 1069,
+      "base": 935,
+      "default": 935,
+      "def_pct": 12.535079513564078,
+      "base_pct": 12.535079513564078
+    },
+    {
+      "size": "medium",
+      "in": 2590,
+      "base": 2196,
+      "default": 2196,
+      "def_pct": 15.212355212355213,
+      "base_pct": 15.212355212355213
+    },
+    {
+      "size": "large",
+      "in": 4802,
+      "base": 4039,
+      "default": 4039,
+      "def_pct": 15.889212827988338,
+      "base_pct": 15.889212827988338
+    },
+    {
+      "size": "bloated",
+      "in": 38596,
+      "base": 38163,
+      "default": 7200,
+      "def_pct": 81.34521712094518,
+      "base_pct": 1.1218779148098248
+    }
+  ],
+  "stages": [
+    {
+      "stage": "(original)",
+      "tokens": 2590,
+      "saved": 0,
+      "pct": 0.0
+    },
+    {
+      "stage": "tools",
+      "tokens": 2225,
+      "saved": 365,
+      "pct": 14.092664092664092
+    },
+    {
+      "stage": "system",
+      "tokens": 2585,
+      "saved": 5,
+      "pct": 0.19305019305019305
+    },
+    {
+      "stage": "messages",
+      "tokens": 2565,
+      "saved": 25,
+      "pct": 0.9652509652509652
+    },
+    {
+      "stage": "dedup",
+      "tokens": 2590,
+      "saved": 0,
+      "pct": 0.0
+    },
+    {
+      "stage": "distill",
+      "tokens": 2590,
+      "saved": 0,
+      "pct": 0.0
+    },
+    {
+      "stage": "all(default)",
+      "tokens": 2196,
+      "saved": 394,
+      "pct": 15.212355212355213
+    }
+  ],
+  "overhead": {
+    "runs": 50,
+    "median_ms": 3.312,
+    "p95_ms": 5.007,
+    "mean_ms": 3.619
+  },
+  "e2e": null
+}
