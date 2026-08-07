@@ -200,7 +200,7 @@ slimtoken high-context --vram-gb 16 --detail   # + the llama-server commands
 |-----:|------|-------|-------|------------:|---------:|-------:|-------------:|
 | 4 GB | dense | Llama 3.2 3B | Q4_K_M | 16 384 | 3.67 | +0.33 | ~112 k |
 | 4 GB | MoE | LFM2.5-8B-A1B | IQ2_S | 32 768 | 3.91 | +0.09 | ~224 k |
-| 8 GB | MoE | LFM2.5-8B-A1B | Q4_K_M | 262 144 | 7.96 | +0.04 | ~1.6 M |
+| 8 GB | MoE | LFM2.5-8B-A1B | Q4_K_M | 131 072 | 7.33 | +0.67 | ~804 k |
 | 8 GB | dense | Llama 3.1 8B | Q4_K_M | 32 768 | 7.71 | +0.29 | ~201 k |
 | 16 GB | MoE | Qwen3.6-35B-A3B | IQ3_S | 131 072 | 14.16 | +1.84 | ~804 k |
 | 16 GB | dense | Llama 3.1 8B | Q4_K_M | 262 144 | 14.71 | +1.29 | ~1.6 M |
@@ -209,10 +209,10 @@ slimtoken high-context --vram-gb 16 --detail   # + the llama-server commands
 
 > The 16 GB MoE row is capped at **128 k** — the proven-stable value on a 16 GB
 > card (256 k OOMs at ub=2048; 128 k@ub512 measured 13.7 GB). The 8 GB MoE row is
-> a razor fit (+0.04 GB margin); drop to the dense 8B or a smaller context for
-> headroom. The 4 GB MoE at 2-bit is a quality trade-off — the dense 3B is usually
-> the better 4 GB pick. All configs use q4_0 KV (`-ctk q4_0 -ctv q4_0`) matching a
-> proven local llama-server setup.
+> capped at 128 k too (256 k is a razor fit, ~+0.04 GB margin — any VRAM spike
+> spills it; 128 k leaves ~0.67 GB headroom). The 4 GB MoE at 2-bit is a quality
+> trade-off — the dense 3B is usually the better 4 GB pick. All configs use q4_0
+> KV (`-ctk q4_0 -ctv q4_0`) matching a proven local llama-server setup.
 
 ## MCP server
 

@@ -50,9 +50,13 @@ _CONTEXT_MODELS = [
      "notes": "8B-A1B MoE at 2-bit; quality loss — dense 3B is usually the better 4GB pick"},
 
     # ── 8 GB ───────────────────────────────────────────────────────────────
+    # 8GB MoE capped at 128k (not the 256k high side): at 256k the Q4_K_M 8B-A1B
+    # is a razor fit (~+0.04 GB margin) — any VRAM fluctuation spills it. 128k
+    # leaves ~2 GB headroom and still gives ~800k effective with compression.
     {"vram_gb": 8, "kind": "MoE", "model": "LFM2.5-8B-A1B", "quant": "Q4_K_M",
      "size_gb": 4.9, "kv_per_token": KV_MOE, "profile": "balanced",
-     "notes": "CortexAgent fallback; Mamba-2+MoE tiny KV → 256k"},
+     "native": 131072,
+     "notes": "CortexAgent fallback; Mamba-2+MoE tiny KV. 128k for headroom (256k is a razor fit)"},
     {"vram_gb": 8, "kind": "dense", "model": "Llama 3.1 8B", "quant": "Q4_K_M",
      "size_gb": 4.9, "kv_per_token": KV_DENSE_8B, "profile": "balanced",
      "notes": "8B dense; smaller context than the MoE on 8GB"},
