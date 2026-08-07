@@ -5,7 +5,7 @@ its backend — a local llama-server or a cloud API — and rewrites every reque
 use **fewer tokens** before forwarding it.
 
 Tool schemas are trimmed, the system prompt is compressed, old turns are
-distilled, repeated tool results are collapsed, and (opt-in) tool output is
+distilled, repeated tool results are collapsed, and tool output is
 type-compressed. Fewer input tokens → faster prompt-eval, lower cost, more
 context headroom. It also ships a backend optimizer that recommends
 llama-server arguments tuned to your GPU.
@@ -20,9 +20,10 @@ reimplemented**:
 | 📦 **Agent Skill + CLI** | `slimtoken optimize` / `slimtoken presets` / `slimtoken high-context` | On-demand minification + VRAM configs from a script or a skill-loaded agent |
 
 MIT-licensed. Ships with `orjson`, `xxhash`, and `tiktoken` for fast JSON,
-hashing, and real token counting. Every **lossless** optimization is on by
-default — no opt-in flags, only opt-out kill-switches. The two **lossy** modes
-(tool compression, output filtering) are opt-in.
+hashing, and real token counting. The full pipeline runs **on by default** —
+tools, system, messages, dedup, distill, and lossy tool-result compression.
+Disable any stage with a `SLIMTOKEN_*` env switch; `SLIMTOKEN_MINIFY=0` for raw
+passthrough. Only **output filtering** (token cap / stop sequences) is opt-in.
 
 ## Install
 
@@ -35,7 +36,7 @@ slimtoken serve --upstream http://127.0.0.1:8082        # local llama-server
 slimtoken serve --upstream https://api.anthropic.com   # or cloud
 
 # CLI: minify a request body on demand
-slimtoken optimize -i request.json                     # default profile: aggressive
+slimtoken optimize -i request.json                     # minify a request body
 slimtoken presets --measure                            # local-model table + measured reduction
 
 # MCP server: stdio JSON-RPC for MCP clients
@@ -76,7 +77,7 @@ sequenceDiagram
 | 📋 system | Collapse whitespace and duplicate banner lines outside code fences; preserve `<tag>` markers and fenced code byte-for-byte. |
 | 💬 messages | Collapse blank-line runs and trailing whitespace in text blocks; pass `tool_use` / `tool_result` / `image` blocks untouched. |
 | 🔄 dedup | Collapse repeated `tool_result` contents; latest kept verbatim, older copies stubbed. |
-| 📝 distill | Truncate old assistant prose beyond the last `SLIMTOKEN_KEEP_LAST` (8) turns to 240 chars/turn. Fence-aware, preserves tool blocks, no model call. |
+| 📝 distill | Truncate old assistant prose beyond the last `SLIMTOKEN_KEEP_LAST` (4) turns to 160 chars/turn. Fence-aware, preserves tool blocks, no model call. |
 | 🎯 budget | Hard token cap (`SLIMTOKEN_MINIFY_BUDGET`, 131072); drops a leading prefix pair-safely — only when over budget. |
 
 **Safety guarantees** — code fences (``` / ~~~) preserved byte-identical; pruning
@@ -86,14 +87,14 @@ stripped from request bodies.
 
 ## Input optimization (total)
 
-Total input-token reduction, default config (all stages on), **measured by the
-pipeline itself** on representative payloads — not asserted:
+Total input-token reduction, the always-on config (full pipeline), **measured
+by the pipeline itself** on representative payloads — not asserted:
 
-| Scenario | safe | aggressive |
-|----------|-----:|-----------:|
-| Typical session (~500 tok) | 9.0% | 9.0% |
-| Bloated session (repeated file reads + verbose history, ~30k tok) | 73.3% | 85.4% |
-| End-to-end vs a live llama-server (model-reported) | — | **11.7%** (1,164 → 1,028 tok) |
+| Scenario | reduction |
+|----------|----------:|
+| Typical session (~500 tok) | 9.0% |
+| Bloated session (repeated file reads + verbose history, ~30k tok) | 85.4% |
+| End-to-end vs a live llama-server (model-reported) | **11.7%** (1,164 → 1,028 tok) |
 
 Run the measurement yourself:
 
@@ -109,15 +110,19 @@ any LLM round-trip. The win is **fewer tokens sent**, not proxy speed. The
 `t0–t4` instrumentation separates slimtoken's work from model generation so you
 can see exactly that.
 
-### Profiles
+### One config, no profiles
 
-Two named presets over the existing config knobs — no new heuristics.
-`aggressive` is the default; `safe` is the lossless escape hatch:
+There are no named profiles. slimtoken always runs the full pipeline (the old
+`aggressive` preset, minus the name); every stage and knob is a raw `SLIMTOKEN_*`
+env switch. The two things you might actually want to do:
 
-| profile | stages | lossy? | token_budget | keep_last | use when |
-|---------|--------|:------:|-------------:|----------:|----------|
-| `aggressive` | tools · system · messages · dedup · distill · tool_compress | **yes** | 131072 | 4 | **default** — most context headroom; trades a little fidelity for compression |
-| `safe` | tools · system · messages · dedup | no | 0 (off) | 8 | exact fidelity — debugging, or the model must see raw tool output verbatim |
+- **Turn it all off** — `SLIMTOKEN_MINIFY=0` (raw passthrough; for debugging or
+  when the model must see input verbatim).
+- **Turn off one lossy stage** — e.g. `SLIMTOKEN_MINIFY_DISTILL=0` to keep old
+  turns verbatim, or `SLIMTOKEN_TOOL_COMPRESS=0` to keep tool results verbatim.
+
+See the [Config](#config) table for the full knob list. The single config
+surface (`build_config`) is shared by the proxy, CLI, MCP server, and skill.
 
 ## Backends — Anthropic, OpenAI, and Ollama
 
@@ -152,27 +157,27 @@ slimtoken optimize -f ollama  -i req.json
 ## Local-model presets by VRAM
 
 Recommended configs for common local models grouped by GPU VRAM tier, each with a
-slimtoken profile and usable context (KV cache + overhead eat into the nominal
-max). The **reduction** column is the live measured token drop that model's
-recommended profile achieves on the bloated payload — computed by the pipeline,
-not hand-waved (`slimtoken presets --measure`).
+usable context (KV cache + overhead eat into the nominal max). The **reduction**
+column is the live measured token drop the always-on pipeline achieves on the
+bloated payload — computed by the pipeline, not hand-waved
+(`slimtoken presets --measure`).
 
-| VRAM | model | quant | usable ctx | profile | reduction |
-|-----:|-------|-------|----------:|---------|--------:|
-| 4 GB | Llama 3.2 3B | Q4_K_M | 8 192 | aggressive | 85.4% |
-| 4 GB | Qwen 2.5 3B | Q4_K_M | 32 768 | aggressive | 85.4% |
-| 4 GB | Phi-4 Mini | Q4_0 | 16 384 | aggressive | 85.4% |
-| 8 GB | LFM2.5-8B-A1B (MoE, 1.5B active) | Q4 | 32 768 | aggressive | 85.4% |
-| 8 GB | Qwen 2.5 7B | Q4_K_M | 32 768 | aggressive | 85.4% |
-| 8 GB | Gemma 3 12B | Q4 | 16 384 | aggressive | 85.4% |
-| 16 GB | Qwen 3 14B | Q4_K_M | 65 536 | aggressive | 85.4% |
-| 16 GB | Mistral Nemo 12B | Q4_K_M | 131 072 | aggressive | 85.4% |
-| 16 GB | Llama 3.1 8B | Q4_K_M | 131 072 | aggressive | 85.4% |
+| VRAM | model | quant | usable ctx | reduction |
+|-----:|-------|-------|----------:|--------:|
+| 4 GB | Llama 3.2 3B | Q4_K_M | 8 192 | 85.4% |
+| 4 GB | Qwen 2.5 3B | Q4_K_M | 32 768 | 85.4% |
+| 4 GB | Phi-4 Mini | Q4_0 | 16 384 | 85.4% |
+| 8 GB | LFM2.5-8B-A1B (MoE, 1.5B active) | Q4 | 32 768 | 85.4% |
+| 8 GB | Qwen 2.5 7B | Q4_K_M | 32 768 | 85.4% |
+| 8 GB | Gemma 3 12B | Q4 | 16 384 | 85.4% |
+| 16 GB | Qwen 3 14B | Q4_K_M | 65 536 | 85.4% |
+| 16 GB | Mistral Nemo 12B | Q4_K_M | 131 072 | 85.4% |
+| 16 GB | Llama 3.1 8B | Q4_K_M | 131 072 | 85.4% |
 
-> Reduction is **profile-dependent, not model-dependent** — the pipeline
-> rewrites the request regardless of which model consumes it. The table maps each
-> tier to its recommended profile; the reduction shown is what that profile
-> delivers on a bloated payload. On a typical session both profiles reduce ~9%.
+> Reduction is **config-dependent, not model-dependent** — the pipeline rewrites
+> the request regardless of which model consumes it, so every tier shows the same
+> number (the always-on config on a bloated payload). On a typical session it's
+> ~9%. Tune the config with the `SLIMTOKEN_*` env knobs, not by switching models.
 
 ## Effective context window — dense vs MoE
 
@@ -217,12 +222,12 @@ the MCP server are independent processes that share the same library.
 
 | Tool | Calls | What it returns |
 |------|-------|-----------------|
-| `slimtoken.optimize_messages` | `minify_request` + profile | minified messages/system/tools + token counts + per-stage stats |
+| `slimtoken.optimize_messages` | `minify_request` + `build_config` | minified messages/system/tools + token counts + per-stage stats |
 | `slimtoken.estimate_tokens` | `count_obj` / `count_messages` | total + per-message token breakdown (cl100k, bundled) |
 | `slimtoken.prune_context` | `prune_context` | a ready-to-inject `<cold_memory>/<recent_context>` prompt block |
 | `slimtoken.minify_tool_result` | `compress_content` | a type-compressed tool_result content block (lossy) |
 | `slimtoken.inspect_budget` | `count_*` + `enforce_budget` | read-only token-budget headroom + would-drop count |
-| `slimtoken.get_config` | `profile_config` / `build_minify_cfg` | the active MinifyConfig (profile or env-derived) |
+| `slimtoken.get_config` | `build_config` | the active MinifyConfig (built from `SLIMTOKEN_*` env) |
 | `slimtoken.list_model_presets` | `preset_with_reduction` | VRAM-tier presets, optionally with live measured reduction |
 | `slimtoken.high_context_presets` | `list_context_presets` | high-context dense+MoE presets per tier, with effective context after compression |
 
@@ -267,7 +272,7 @@ one-shot MCP stdio call (`slimtoken-mcp`) when only the MCP server is installed 
 so the skill works regardless of which surface the host has:
 
 ```bash
-python3 skills/slimtoken-optimizer/scripts/optimize.py optimize -i req.json -p aggressive
+python3 skills/slimtoken-optimizer/scripts/optimize.py optimize -i req.json
 python3 skills/slimtoken-optimizer/scripts/optimize.py presets --vram-gb 16 --measure
 python3 skills/slimtoken-optimizer/scripts/optimize.py estimate -i req.json
 ```
@@ -276,15 +281,15 @@ Drop the `skills/slimtoken-optimizer/` directory into your agent's skill search
 path and the host runtime surfaces it when a prompt matches "shrink / minimize /
 trim tokens / context too long".
 
-## Lossy modes (opt-in)
+## Lossy stages
 
-Two modes are **off by default** because they discard information. Enable them
-only when the trade-off is worth it.
+Two stages discard information. **Tool-result compression is on by default**
+(part of the always-on pipeline); **output filtering is opt-in**.
 
-| Mode | Env | What it does |
-|------|-----|--------------|
-| 🗜️ tool compression | `SLIMTOKEN_TOOL_COMPRESS=1` | Replace large `tool_result` content with a compact, type-detected representation (directory listings, git output, logs, JSON, source) + a `[slimtoken-compressed] N B -> M B` metadata header. Pair-safe — only the `content` field changes. |
-| ✂️ output filter | `SLIMTOKEN_MAX_TOKENS=N` / `SLIMTOKEN_STOP=a,b` | Enforce a max output-token cap (counted with the real tokenizer) and/or stop-sequence truncation on the streamed response. Raw passthrough with zero overhead when unset. |
+| Stage | Env | Default | What it does |
+|-------|-----|:-------:|--------------|
+| 🗜️ tool compression | `SLIMTOKEN_TOOL_COMPRESS` | **1** | Replace large `tool_result` content with a compact, type-detected representation (directory listings, git output, logs, JSON, source) + a `[slimtoken-compressed] N B -> M B` metadata header. Pair-safe — only the `content` field changes. Set `0` to disable. |
+| ✂️ output filter | `SLIMTOKEN_MAX_TOKENS=N` / `SLIMTOKEN_STOP=a,b` | off | Enforce a max output-token cap (counted with the real tokenizer) and/or stop-sequence truncation on the streamed response. Raw passthrough with zero overhead when unset. |
 
 ## Config
 
@@ -299,11 +304,11 @@ Defaults are the recommended values. Set any to `0` to disable.
 | `SLIMTOKEN_MINIFY_DEDUP` | 1 | |
 | `SLIMTOKEN_MINIFY_DISTILL` | 1 | |
 | `SLIMTOKEN_MINIFY_BUDGET` | 131072 | 0 disables hard prune (distill still runs) |
-| `SLIMTOKEN_KEEP_LAST` | 8 | recent turns kept verbatim by distill/budget |
+| `SLIMTOKEN_KEEP_LAST` | 4 | recent turns kept verbatim by distill/budget |
 | `SLIMTOKEN_DEDUP_MIN_CHARS` | 200 | only dedup tool results at least this long |
-| `SLIMTOKEN_DISTILL_MAX_CHARS` | 240 | max chars per distilled old turn |
+| `SLIMTOKEN_DISTILL_MAX_CHARS` | 160 | max chars per distilled old turn |
 | `SLIMTOKEN_MINIFY_TOOL_SKIP` | _(none)_ | comma-list of tool names to never minify |
-| `SLIMTOKEN_TOOL_COMPRESS` | 0 | lossy type-specific tool-result compression |
+| `SLIMTOKEN_TOOL_COMPRESS` | 1 | lossy type-specific tool-result compression |
 | `SLIMTOKEN_MAX_TOKENS` | _(unset)_ | output-token cap (enables output filter) |
 | `SLIMTOKEN_STOP` | _(unset)_ | comma-joined stop sequences (enables output filter) |
 | `SLIMTOKEN_HTTP2` | 0 | use HTTP/2 to the upstream |
@@ -366,7 +371,7 @@ safe values for your specific VRAM automatically.
 ## Tests
 
 ```bash
-python3 tests/test_all.py          # 172 checks — core pipeline + proxy + adapters + context presets
+python3 tests/test_all.py          # 161 checks — core pipeline + proxy + adapters + context presets
 python3 tests/test_mcp_server.py   # 60 checks — MCP stdio server (all 8 tools)
 ```
 

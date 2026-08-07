@@ -164,7 +164,7 @@ def cmd_latency(args):
     try:
         m = _json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=2).read())
         L = m.get("latency", {})
-        print(f"latency breakdown (seconds, last sample):")
+        print("latency breakdown (seconds, last sample):")
         print(f"  t0->t1 ingress   : {L.get('proxy_ingress', 0):.4f}  (read request)")
         print(f"  t1->t2 optimize   : {L.get('optimize', 0):.4f}  (parse + minify)")
         print(f"  t2->t3 ttft       : {L.get('ttft', 0):.4f}  (forward -> first token)")
@@ -209,15 +209,14 @@ def cmd_optimize(args):
     else:
         raw = sys.stdin.read()
     body = _json.loads(raw)
-    profile = args.profile
     fmt = args.format
-    from .profiles import profile_config
+    from .profiles import build_config
     from .pipeline import minify_request
     from .tokencount import count_obj
     from . import adapters
     if fmt != "anthropic":
         body = adapters.to_canonical(body, fmt)
-    cfg = profile_config(profile)
+    cfg = build_config()
     if args.max_input_tokens is not None:
         cfg.token_budget = int(args.max_input_tokens)
     tin = count_obj(body)
@@ -233,7 +232,7 @@ def cmd_optimize(args):
             print("system:", _json.dumps(out["system"], ensure_ascii=False, default=str))
         if "tools" in out:
             print("tools:", _json.dumps(out["tools"], ensure_ascii=False, default=str))
-    print(f"tokens: {tin} -> {tout}  (-{round(100*(tin-tout)/tin,1) if tin else 0}%  profile={profile})",
+    print(f"tokens: {tin} -> {tout}  (-{round(100*(tin-tout)/tin,1) if tin else 0}%)",
           file=sys.stderr)
     print(f"stages: tools={stats.tools_minified} system={stats.system_minified} "
           f"msgs={stats.messages_minified} dedup={stats.dedup_count} "
@@ -250,12 +249,12 @@ def cmd_presets(args):
     if not rows:
         print("no presets match.", file=sys.stderr)
         return 1
-    print(f"{'VRAM':>4}  {'model':38} {'quant':8} {'ctx':>7} {'profile':10} reduction")
+    print(f"{'VRAM':>4}  {'model':38} {'quant':8} {'ctx':>7} reduction")
     for r in rows:
         red = r.get("reduction_pct_bloated")
         reds = f"{red:>5}%" if red is not None else "  n/a"
         print(f"{r['vram_gb']:>4}GB {r['model'][:38]:38} {r['quant'][:8]:8} "
-              f"{r['context']:>7} {r['profile']:10} {reds}   {r['notes']}")
+              f"{r['context']:>7} {reds}   {r['notes']}")
     return 0
 
 
@@ -269,11 +268,11 @@ def cmd_high_context(args):
         print("no presets match.", file=sys.stderr)
         return 1
     print(f"{'tier':>4} {'kind':5} {'model':18} {'quant':7} {'nominal':>8} {'totalGB':>7} "
-          f"{'margin':>6} {'profile':10} {'red%':>5} {'effective':>10}  notes")
+          f"{'margin':>6} {'red%':>5} {'effective':>10}  notes")
     for r in rows:
         print(f"{r['vram_gb']:>4}GB {r['kind']:5} {r['model'][:18]:18} {r['quant'][:7]:7} "
               f"{r['nominal_ctx']:>8} {r['total_gb']:>7.2f} {r['margin_gb']:>+6.2f} "
-              f"{r['profile']:10} {r['reduction_pct']:>5.1f} {r['effective_ctx']:>10,}  "
+              f"{r['reduction_pct']:>5.1f} {r['effective_ctx']:>10,}  "
               f"{r['notes'][:38]}")
     if args.detail:
         print("\n# llama-server commands (replace the -m path with your .gguf):")
@@ -329,24 +328,23 @@ def main(argv=None):
     lt.add_argument("--port", type=int, default=None)
     lt.set_defaults(func=cmd_latency)
 
-    o = sub.add_parser("optimize", help="minify a request JSON body (file or stdin) via a profile")
+    o = sub.add_parser("optimize", help="minify a request JSON body (file or stdin)")
     o.add_argument("--input", "-i", default=None, help="input JSON file (default: stdin)")
-    o.add_argument("--profile", "-p", default="aggressive", choices=["safe", "aggressive"])
     o.add_argument("--format", "-f", default="anthropic",
                    choices=["anthropic", "openai", "ollama"],
                    help="request body format (anthropic /v1/messages, "
                         "openai /v1/chat/completions, ollama /api/chat)")
-    o.add_argument("--max-input-tokens", type=int, default=None, help="override the profile token_budget")
+    o.add_argument("--max-input-tokens", type=int, default=None, help="override the token_budget")
     o.add_argument("--json", action="store_true", help="emit the full minified body as one JSON object")
     o.set_defaults(func=cmd_optimize)
 
     pr = sub.add_parser("presets", help="list local-model presets by GPU VRAM tier")
-    pr.add_argument("--vram-gb", type=int, default=None, help="filter to one tier (4/8/16/24)")
+    pr.add_argument("--vram-gb", type=int, default=None, help="filter to one tier (4/8/16)")
     pr.add_argument("--measure", action="store_true", help="run the pipeline to measure real reduction")
     pr.set_defaults(func=cmd_presets)
 
     hc = sub.add_parser("high-context", help="list high-context VRAM-tier presets (dense + MoE)")
-    hc.add_argument("--vram-gb", type=int, default=None, help="filter to one tier (4/8/16/24)")
+    hc.add_argument("--vram-gb", type=int, default=None, help="filter to one tier (4/8/16)")
     hc.add_argument("--detail", action="store_true", help="also print the llama-server commands")
     hc.set_defaults(func=cmd_high_context)
 

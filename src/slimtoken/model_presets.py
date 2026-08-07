@@ -1,12 +1,11 @@
 """model_presets — default local-model configs by VRAM tier + measured reduction.
 
 A curated table of common local models grouped by GPU VRAM tier, each with a
-recommended slimtoken aggressiveness profile and usable context. The reduction
-numbers are NOT hand-waved: :func:`measure_reduction` runs the EXISTING pipeline
-(:func:`slimtoken.pipeline.minify_request`) on a representative payload with
-the profile's :class:`MinifyConfig` and reports the real token drop. So the
-"how much slimtoken optimizes this model" figure is computed by the software
-itself, not asserted.
+usable context. The reduction numbers are NOT hand-waved: :func:`measure_reduction`
+runs the EXISTING pipeline (:func:`slimtoken.pipeline.minify_request`) on a
+representative payload with the default always-on :class:`MinifyConfig` and
+reports the real token drop. So the "how much slimtoken optimizes" figure is
+computed by the software itself, not asserted.
 
 This module adds NO new optimization heuristics. It is a data table + a thin
 measurement helper that calls the existing pipeline and tokenizer.
@@ -16,34 +15,34 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from .pipeline import minify_request
-from .profiles import profile_config
+from .profiles import build_config
 from .tokencount import count_obj
 
 
 # ── VRAM-tier model table ────────────────────────────────────────────────────
 # tier: (label, min_gb, max_gb). Each model: name, quant, context (usable, not
-# nominal — KV cache + overhead eat into the advertised max), profile, notes.
+# nominal — KV cache + overhead eat into the advertised max), notes.
 MODEL_PRESETS: List[Dict] = [
     {"vram_gb": 4, "model": "Llama 3.2 3B", "quant": "Q4_K_M",
-     "context": 8192, "profile": "aggressive", "notes": "best all-rounder at 4GB; low latency"},
+     "context": 8192, "notes": "best all-rounder at 4GB; low latency"},
     {"vram_gb": 4, "model": "Qwen 2.5 3B", "quant": "Q4_K_M",
-     "context": 32768, "profile": "aggressive", "notes": "stronger reasoning than Llama 3B at this size"},
+     "context": 32768, "notes": "stronger reasoning than Llama 3B at this size"},
     {"vram_gb": 4, "model": "Phi-4 Mini", "quant": "Q4_0",
-     "context": 16384, "profile": "aggressive", "notes": "fast; tight context on 4GB"},
+     "context": 16384, "notes": "fast; tight context on 4GB"},
 
     {"vram_gb": 8, "model": "LFM2.5-8B-A1B (MoE, 1.5B active)", "quant": "Q4",
-     "context": 32768, "profile": "aggressive", "notes": "~5GB at Q4; real context headroom on 8GB"},
+     "context": 32768, "notes": "~5GB at Q4; real context headroom on 8GB"},
     {"vram_gb": 8, "model": "Qwen 2.5 7B", "quant": "Q4_K_M",
-     "context": 32768, "profile": "aggressive", "notes": "solid general-purpose 7B"},
+     "context": 32768, "notes": "solid general-purpose 7B"},
     {"vram_gb": 8, "model": "Gemma 3 12B", "quant": "Q4",
-     "context": 16384, "profile": "aggressive", "notes": "borderline fit on 8GB; drop context if OOM"},
+     "context": 16384, "notes": "borderline fit on 8GB; drop context if OOM"},
 
     {"vram_gb": 16, "model": "Qwen 3 14B", "quant": "Q4_K_M",
-     "context": 65536, "profile": "aggressive", "notes": "good quality/size balance on 16GB"},
+     "context": 65536, "notes": "good quality/size balance on 16GB"},
     {"vram_gb": 16, "model": "Mistral Nemo 12B", "quant": "Q4_K_M",
-     "context": 131072, "profile": "aggressive", "notes": "large native context; long-context workloads"},
+     "context": 131072, "notes": "large native context; long-context workloads"},
     {"vram_gb": 16, "model": "Llama 3.1 8B", "quant": "Q4_K_M",
-     "context": 131072, "profile": "aggressive", "notes": "fast; lots of context headroom on 16GB"},
+     "context": 131072, "notes": "fast; lots of context headroom on 16GB"},
 ]
 
 
@@ -117,40 +116,39 @@ def _payload_bloated() -> dict:
 _PAYLOADS = {"typical": _payload_typical, "bloated": _payload_bloated}
 
 
-def measure_reduction(profile: str = "aggressive", size: str = "bloated") -> Dict:
-    """Run the existing pipeline on a representative payload with a profile.
+def measure_reduction(size: str = "bloated") -> Dict:
+    """Run the existing pipeline on a representative payload with the default
+    always-on config.
 
-    Returns {"profile", "size", "tokens_in", "tokens_out", "reduction_pct",
-    "stages"}. Uses the real cl100k tokenizer via :func:`count_obj` (no
+    Returns {"size", "tokens_in", "tokens_out", "reduction_pct", "stages",
+    "errors"}. Uses the real cl100k tokenizer via :func:`count_obj` (no
     whole-body serialize). No new heuristics — just measurement.
     """
     import copy
     if size not in _PAYLOADS:
         size = "bloated"
     body = _PAYLOADS[size]()
-    cfg = profile_config(profile)
+    cfg = build_config()
     tin = count_obj(body)
     out, stats = minify_request(copy.deepcopy(body), cfg)
     tout = count_obj(out)
     pct = round(100 * (tin - tout) / tin, 1) if tin else 0.0
-    return {"profile": profile, "size": size,
+    return {"size": size,
             "tokens_in": tin, "tokens_out": tout, "reduction_pct": pct,
             "stages": sorted(cfg.enabled_stages),
             "errors": list(stats.errors) if stats.errors else []}
 
 
 def preset_with_reduction(vram_gb: Optional[int] = None) -> List[Dict]:
-    """Preset rows enriched with the live measured reduction for their profile
-    on a bloated payload (the case the proxy is built for)."""
-    cache: Dict[str, Dict] = {}
+    """Preset rows enriched with the live measured reduction on a bloated
+    payload (the case slimtoken is built for). All rows use the same default
+    always-on config, so the measurement is computed once and shared."""
+    m = measure_reduction("bloated")
     rows = []
     for r in list_presets(vram_gb):
-        prof = r["profile"]
-        if prof not in cache:
-            cache[prof] = measure_reduction(prof, "bloated")
         rr = dict(r)
-        rr["reduction_pct_bloated"] = cache[prof]["reduction_pct"]
-        rr["tokens_in_bloated"] = cache[prof]["tokens_in"]
-        rr["tokens_out_bloated"] = cache[prof]["tokens_out"]
+        rr["reduction_pct_bloated"] = m["reduction_pct"]
+        rr["tokens_in_bloated"] = m["tokens_in"]
+        rr["tokens_out_bloated"] = m["tokens_out"]
         rows.append(rr)
     return rows

@@ -20,7 +20,6 @@ installed, with no extra deps beyond slimtoken's existing ones.
 from __future__ import annotations
 
 import json
-import os
 import sys
 from typing import Any, Dict, Optional
 
@@ -28,7 +27,7 @@ from . import tools
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "slimtoken-mcp"
-SERVER_VERSION = "0.3.2"
+SERVER_VERSION = "0.3.3"
 
 
 def _send(obj: Dict[str, Any]) -> None:

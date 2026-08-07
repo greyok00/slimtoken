@@ -26,7 +26,7 @@ from typing import Dict, Optional
 
 import httpx
 
-from .pipeline import minify_request, MinifyConfig
+from .pipeline import minify_request
 from .upstream import Upstream
 from ._deps import jloads, jdumps
 from . import adapters
@@ -80,6 +80,9 @@ def _metrics_json() -> str:
 
 
 # ── minify config from env ────────────────────────────────────────────────────
+# The single config builder lives in :mod:`slimtoken.profiles` (one config
+# surface shared by proxy / CLI / MCP / skill — no named profiles). These two
+# helpers remain here only for the non-minify env knobs (HTTP2, etc.).
 def _bool_env(name: str, default: bool) -> bool:
     v = os.environ.get(name)
     if v is None:
@@ -87,39 +90,7 @@ def _bool_env(name: str, default: bool) -> bool:
     return v.strip().lower() in ("1", "true", "yes", "on")
 
 
-def _int_env(name: str, default: int) -> int:
-    try:
-        return int(os.environ.get(name, str(default)) or default)
-    except ValueError:
-        return default
-
-
-def build_minify_cfg() -> MinifyConfig:
-    if not _bool_env("SLIMTOKEN_MINIFY", True):
-        return MinifyConfig(enabled_stages=set())
-    stages = set()
-    if _bool_env("SLIMTOKEN_MINIFY_TOOLS", True):
-        stages.add("tools")
-    if _bool_env("SLIMTOKEN_MINIFY_SYSTEM", True):
-        stages.add("system")
-    if _bool_env("SLIMTOKEN_MINIFY_MESSAGES", True):
-        stages.add("messages")
-    if _bool_env("SLIMTOKEN_MINIFY_DEDUP", True):
-        stages.add("dedup")
-    if _bool_env("SLIMTOKEN_MINIFY_DISTILL", True):
-        stages.add("distill")
-    skip = {s.strip() for s in os.environ.get(
-        "SLIMTOKEN_MINIFY_TOOL_SKIP", "").split(",") if s.strip()}
-    budget = _int_env("SLIMTOKEN_MINIFY_BUDGET", 131072)
-    return MinifyConfig(
-        token_budget=budget,
-        enabled_stages=stages,
-        tool_skip=skip,
-        keep_last=_int_env("SLIMTOKEN_KEEP_LAST", 8),
-        dedup_min_chars=_int_env("SLIMTOKEN_DEDUP_MIN_CHARS", 200),
-        distill_max_chars=_int_env("SLIMTOKEN_DISTILL_MAX_CHARS", 240),
-        tool_compress=_bool_env("SLIMTOKEN_TOOL_COMPRESS", False),
-    )
+from .profiles import build_config as build_minify_cfg  # noqa: E402
 
 
 _CFG = build_minify_cfg()

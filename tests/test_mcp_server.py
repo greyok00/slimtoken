@@ -146,8 +146,7 @@ def test_optimize_messages():
                     "params": {"name": "slimtoken.optimize_messages",
                                "arguments": {"messages": body["messages"],
                                              "system": body["system"],
-                                             "tools": body["tools"],
-                                             "profile": "aggressive"}}})
+                                             "tools": body["tools"]}}})
         o = json.loads(r["result"]["content"][0]["text"])
         check("optimize reports tokens_in > tokens_out",
               o["tokens_in"] > o["tokens_out"])
@@ -169,7 +168,7 @@ def test_optimize_messages():
                         result_ids.add(blk.get("tool_use_id"))
         check("pair-safe: all tool_use ids have results",
               use_ids == result_ids, f"use={use_ids} result={result_ids}")
-        check("optimize echoes profile", o["profile"] == "aggressive")
+        check("optimize echoes format", o["format"] == "anthropic")
     finally:
         c.close()
 
@@ -255,20 +254,18 @@ def test_get_config():
         c.notify({"jsonrpc": "2.0", "method": "notifications/initialized"})
         r = c.call({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                     "params": {"name": "slimtoken.get_config",
-                               "arguments": {"profile": "aggressive"}}})
+                               "arguments": {}}})
         o = json.loads(r["result"]["content"][0]["text"])
-        check("get_config(profile) returns profile", o["profile"] == "aggressive")
+        check("get_config reports source", o.get("source") == "SLIMTOKEN_* env")
         cfg = o["config"]
         check("get_config enabled_stages is a sorted list",
               isinstance(cfg["enabled_stages"], list) and cfg["enabled_stages"] == sorted(cfg["enabled_stages"]))
-        check("aggressive enables distill", "distill" in cfg["enabled_stages"])
-        check("aggressive enables tool_compress",
+        check("always-on enables distill", "distill" in cfg["enabled_stages"])
+        check("always-on enables tool_compress",
               cfg.get("tool_compress") is True or cfg.get("tool_compress") == 1)
-        # env-source variant (no profile arg)
-        r2 = c.call({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                     "params": {"name": "slimtoken.get_config", "arguments": {}}})
-        o2 = json.loads(r2["result"]["content"][0]["text"])
-        check("get_config(no args) reports source", "source" in o2)
+        # tool_compress is ON by default in the always-on config
+        check("always-on token_budget is 131072", cfg.get("token_budget") == 131072)
+        check("always-on keep_last is 4", cfg.get("keep_last") == 4)
     finally:
         c.close()
 
@@ -351,7 +348,7 @@ def test_high_context_presets():
         o = json.loads(r["result"]["content"][0]["text"])
         check("16GB presets non-empty", o["count"] > 0, f"count={o['count']}")
         row = o["presets"][0]
-        for k in ("nominal_ctx", "ub", "total_gb", "margin_gb", "profile",
+        for k in ("nominal_ctx", "ub", "total_gb", "margin_gb",
                   "reduction_pct", "effective_ctx", "llama_cmd", "kv_quant"):
             check(f"preset has {k}", k in row, f"missing {k}")
         check("16GB fits in VRAM (total <= 16)", row["total_gb"] <= 16, f"{row['total_gb']}")

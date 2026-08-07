@@ -15,10 +15,10 @@ the entire body once per candidate — an N-way hidden tax.)
 """
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict
 
-from .tokencount import (count_messages, count_obj, count_system, count_tools,
-                         estimate_tokens_obj, message_prefix_sums)
+from .tokencount import (count_messages, count_system, count_tools,
+                         message_prefix_sums)
 
 
 def _has_tool_use(msg) -> bool:

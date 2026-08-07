@@ -21,7 +21,7 @@ tool blocks — so tool_use ↔ tool_result pairing and ordering are preserved.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List
+from typing import Dict, List
 
 from .message_minify import split_fences
 

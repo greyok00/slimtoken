@@ -9,16 +9,16 @@ without knowing whether slimtoken is installed as a CLI or only exposed via MCP.
 Usage (mirrors the CLI subcommands):
 
     # minify a request body (file or stdin) and print the result + stats
-    python3 scripts/optimize.py optimize [--input FILE] [--profile safe|aggressive]
+    python3 scripts/optimize.py optimize [--input FILE]
                                           [--max-input-tokens N] [--json]
 
     # list local-model presets by VRAM tier (optionally with measured reduction)
-    python3 scripts/optimize.py presets [--vram-gb 4|8|16|24] [--measure]
+    python3 scripts/optimize.py presets [--vram-gb 4|8|16] [--measure]
 
     # count tokens in a request body (file or stdin)
     python3 scripts/optimize.py estimate [--input FILE] [--model NAME]
 
-With no subcommand, reads a request JSON from stdin and runs `optimize --profile aggressive`.
+With no subcommand, reads a request JSON from stdin and runs `optimize`.
 
 Exit codes: 0 success, 1 no slimtoken available, 2 subcommand error.
 """
@@ -104,8 +104,6 @@ def main(argv=None) -> int:
 
     o = sub.add_parser("optimize")
     o.add_argument("--input", "-i", default=None)
-    o.add_argument("--profile", "-p", default="aggressive",
-                   choices=["safe", "aggressive"])
     o.add_argument("--max-input-tokens", type=int, default=None)
     o.add_argument("--json", action="store_true")
 
@@ -126,7 +124,7 @@ def main(argv=None) -> int:
     # ── CLI path (primary) ──────────────────────────────────────────────────
     if _have_cli():
         if cmd == "optimize":
-            cli_args = ["optimize", "-p", args.profile]
+            cli_args = ["optimize"]
             if args.input:  cli_args += ["-i", args.input]
             if args.max_input_tokens is not None:
                 cli_args += ["--max-input-tokens", str(args.max_input_tokens)]
@@ -138,9 +136,9 @@ def main(argv=None) -> int:
             if args.measure:  cli_args += ["--measure"]
             return _run_cli(cli_args)
         if cmd == "estimate":
-            # CLI has no estimate subcommand; use optimize --profile safe (lossless)
-            # which prints token counts to stderr, then discard stdout.
-            cli_args = ["optimize", "-p", "safe"]
+            # CLI has no estimate subcommand; use `optimize`, which prints the
+            # raw token count (tokens_in, counted before minify) to stderr.
+            cli_args = ["optimize"]
             if args.input: cli_args += ["-i", args.input]
             return _run_cli(cli_args)
 
@@ -152,7 +150,7 @@ def main(argv=None) -> int:
 
     if cmd == "optimize":
         body = _read_body(args)
-        a = {"messages": body.get("messages", []), "profile": args.profile}
+        a = {"messages": body.get("messages", [])}
         if "system" in body: a["system"] = body["system"]
         if "tools" in body:  a["tools"] = body["tools"]
         if args.max_input_tokens is not None:
@@ -163,7 +161,7 @@ def main(argv=None) -> int:
         if r.get("tools") is not None:  out["tools"] = r["tools"]
         print(json.dumps(out, ensure_ascii=False, default=str))
         print(f"tokens: {r['tokens_in']} -> {r['tokens_out']}  "
-              f"(-{r['reduction_pct']}%  profile={args.profile})", file=sys.stderr)
+              f"(-{r['reduction_pct']}%)", file=sys.stderr)
         return 0
     if cmd == "presets":
         a = {"measure": args.measure}
@@ -173,7 +171,7 @@ def main(argv=None) -> int:
             red = row.get("reduction_pct_bloated")
             reds = f"{red:>5}%" if red is not None else "  n/a"
             print(f"{row['vram_gb']:>4}GB {row['model'][:38]:38} "
-                  f"{row['quant'][:8]:8} {row['context']:>7} {row['profile']:10} {reds}")
+                  f"{row['quant'][:8]:8} {row['context']:>7} {reds}")
         return 0
     if cmd == "estimate":
         body = _read_body(args)

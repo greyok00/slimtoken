@@ -13,7 +13,6 @@ from __future__ import annotations
 import os
 import socket
 from dataclasses import dataclass
-from typing import Optional
 from urllib.parse import urlparse
 
 from .tls import client_tls_from_env, wrap_client

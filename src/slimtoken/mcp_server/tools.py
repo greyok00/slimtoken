@@ -21,7 +21,7 @@ from ..tokencount import count_messages, count_obj, count_system, count_tools
 from ..context_prune import prune_context
 from ..tool_result_compress import compress_content
 from ..token_budget import enforce_budget
-from ..profiles import profile_config, profile_doc, profile_names
+from ..profiles import build_config
 from ..model_presets import list_presets, preset_with_reduction
 from ..adapters import to_canonical, from_canonical, CANONICAL
 from ..context_presets import list_context_presets, best_context_for_tier
@@ -34,8 +34,8 @@ def _schema_tools() -> List[Dict[str, Any]]:
             "name": "slimtoken.optimize_messages",
             "description": ("Reduce prompt size while preserving message structure and "
                             "tool-call validity (pair-safe, fence-aware). Returns the minified "
-                            "messages plus token counts. Lossless for the 'safe' profile; "
-                            "'aggressive' enables lossy tool-result compression."),
+                            "messages plus token counts. Lossy by default (distill + tool-result "
+                            "compression); disable stages via the SLIMTOKEN_MINIFY_* env knobs."),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -43,11 +43,8 @@ def _schema_tools() -> List[Dict[str, Any]]:
                     "system": {"description": "system prompt (string or list of text blocks)",
                                "type": ["string", "array"]},
                     "tools": {"type": "array", "description": "tool definitions to minify"},
-                    "profile": {"type": "string", "enum": profile_names(),
-                                "default": "aggressive",
-                                "description": "aggressiveness preset (existing MinifyConfig knobs)"},
                     "max_input_tokens": {"type": "integer",
-                                         "description": "override the profile's token_budget (hard prune cap)"},
+                                         "description": "override the token_budget (hard prune cap)"},
                     "format": {"type": "string", "enum": ["anthropic", "openai", "ollama"],
                                "default": "anthropic",
                                "description": "request format (anthropic=identity; openai/ollama "
@@ -122,7 +119,7 @@ def _schema_tools() -> List[Dict[str, Any]]:
                     "system": {"type": ["string", "array"]},
                     "tools": {"type": "array"},
                     "token_budget": {"type": "integer", "default": 131072},
-                    "keep_last": {"type": "integer", "default": 8},
+                    "keep_last": {"type": "integer", "default": 4},
                     "format": {"type": "string", "enum": ["anthropic", "openai", "ollama"],
                                "default": "anthropic",
                                "description": "request format of the body (normalized to canonical before inspection)"},
@@ -132,26 +129,24 @@ def _schema_tools() -> List[Dict[str, Any]]:
         },
         {
             "name": "slimtoken.get_config",
-            "description": ("Return the slimtoken config in use. With a `profile`, returns that "
-                            "profile's MinifyConfig; without, returns the proxy's env-derived "
-                            "config (SLIMTOKEN_* env). Useful to see what the proxy will do."),
+            "description": ("Return the slimtoken config in use: the always-on MinifyConfig built "
+                            "from SLIMTOKEN_* env knobs (the single config surface shared by the "
+                            "proxy, CLI, and MCP server). Useful to see what slimtoken will do."),
             "inputSchema": {
                 "type": "object",
-                "properties": {
-                    "profile": {"type": "string", "enum": profile_names()},
-                },
+                "properties": {},
             },
         },
         {
             "name": "slimtoken.list_model_presets",
-            "description": ("List recommended local-model presets by GPU VRAM tier (4/8/16/24GB), "
-                            "each with a slimtoken profile and usable context. With measure=true, "
-                            "enriches each row with the live measured token reduction on a bloated "
-                            "payload (run by the pipeline itself)."),
+            "description": ("List recommended local-model presets by GPU VRAM tier (4/8/16GB), "
+                            "each with a usable context. With measure=true, enriches each row with "
+                            "the live measured token reduction on a bloated payload (run by the "
+                            "pipeline itself)."),
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "vram_gb": {"type": "integer", "description": "filter to one tier (4/8/16/24)"},
+                    "vram_gb": {"type": "integer", "description": "filter to one tier (4/8/16)"},
                     "measure": {"type": "boolean", "default": False,
                                 "description": "run the pipeline to measure real reduction"},
                 },
@@ -168,7 +163,7 @@ def _schema_tools() -> List[Dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "vram_gb": {"type": "integer", "description": "filter to one tier (4/8/16/24)"},
+                    "vram_gb": {"type": "integer", "description": "filter to one tier (4/8/16)"},
                     "best": {"type": "boolean", "default": False,
                              "description": "return only the largest-effective-context preset for the tier"},
                 },
@@ -243,9 +238,8 @@ def _t_optimize_messages(a: Dict[str, Any]) -> Dict[str, Any]:
     msgs = a.get("messages")
     if not isinstance(msgs, list):
         raise ToolError("messages must be an array")
-    profile = a.get("profile", "aggressive")
     fmt = a.get("format", "anthropic") or "anthropic"
-    cfg = profile_config(profile)
+    cfg = build_config()
     if a.get("max_input_tokens") is not None:
         cfg.token_budget = int(a["max_input_tokens"])
     body, _ = _canonical_body(a)
@@ -261,7 +255,6 @@ def _t_optimize_messages(a: Dict[str, Any]) -> Dict[str, Any]:
         "tools": out.get("tools") if "tools" in out else None,
         "tokens_in": tin, "tokens_out": tout,
         "reduction_pct": round(100 * (tin - tout) / tin, 1) if tin else 0.0,
-        "profile": profile,
         "format": fmt,
         "stats": {
             "tools_minified": stats.tools_minified,
@@ -330,7 +323,7 @@ def _t_inspect_budget(a: Dict[str, Any]) -> Dict[str, Any]:
     body, fmt = _canonical_body(a)
     canon_msgs = body.get("messages", msgs)
     budget = int(a.get("token_budget", 131072))
-    keep_last = int(a.get("keep_last", 8))
+    keep_last = int(a.get("keep_last", 4))
     sys_tok = count_system(body.get("system")) if "system" in body else 0
     tools_tok = count_tools(body.get("tools")) if "tools" in body else 0
     msg_total, per_msg = count_messages(canon_msgs)
@@ -352,16 +345,11 @@ def _t_inspect_budget(a: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _t_get_config(a: Dict[str, Any]) -> Dict[str, Any]:
-    profile = a.get("profile")
-    if profile:
-        cfg = profile_config(profile)
-        return {"profile": profile, "config": _cfg_dict(cfg),
-                "description": profile_doc().get(profile)}
-    # proxy env-derived config (lazy import so the MCP process need not import
-    # httpx/asyncio unless this tool is actually called)
-    from ..proxy import build_minify_cfg
-    cfg = build_minify_cfg()
-    return {"config": _cfg_dict(cfg), "source": "SLIMTOKEN_* env (proxy config)"}
+    # The single config surface: build_config reads SLIMTOKEN_* env. Use the
+    # local builder (no proxy import — keeps httpx/asyncio out of the MCP
+    # process unless another tool actually needs them).
+    cfg = build_config()
+    return {"config": _cfg_dict(cfg), "source": "SLIMTOKEN_* env"}
 
 
 def _t_list_model_presets(a: Dict[str, Any]) -> Dict[str, Any]:

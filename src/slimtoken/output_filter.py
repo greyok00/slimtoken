@@ -159,12 +159,10 @@ class OutputFilter:
         if self.stops:
             combined = self._stop_rolling + text
             hit_idx = -1
-            hit_len = 0
             for s in self.stops:
                 i = combined.find(s)
                 if i >= 0 and (hit_idx < 0 or i < hit_idx):
                     hit_idx = i
-                    hit_len = len(s)
             if hit_idx >= 0:
                 # truncate at the stop; the rolling buffer's already-emitted
                 # portion is gone, so we only return the portion of `text` that

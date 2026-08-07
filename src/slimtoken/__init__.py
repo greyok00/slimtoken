@@ -17,5 +17,5 @@ from .pipeline import (  # noqa: F401
     minify_request,
 )
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 __all__ = ["MinifyConfig", "MinifyStats", "minify_request"]

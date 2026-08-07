@@ -1,14 +1,14 @@
 ---
 name: slimtoken-optimizer
-description: Shrink LLM prompts before sending them — collapse duplicate tool results, distill old turns, minify tool schemas and system prompts, and prune to a token budget. Aggressive (lossy) by default for the most context headroom; `safe` is the lossless escape hatch. Works with any local or cloud model via the slimtoken CLI or MCP server.
+description: Shrink LLM prompts before sending them — collapse duplicate tool results, distill old turns, minify tool schemas and system prompts, and prune to a token budget. Lossy by default (distill + tool-result compression) for the most context headroom; disable any stage via the SLIMTOKEN_* env knobs. Works with any local or cloud model via the slimtoken CLI or MCP server.
 ---
 
 # slimtoken-optimizer
 
 Trim prompt tokens before a request goes out. Use this whenever a conversation has
 grown long, tool results are large, or you're about to hit a context/token-budget
-limit on a local or cloud model. Model-agnostic — it rewrites the request, not the
-model.
+limit on a local or cloud model. Model-agnostic — it rewrites the request, not
+the model.
 
 ## When to use
 - A tool returned a large result (file dump, directory listing, log, JSON) and the
@@ -23,9 +23,8 @@ model.
 
 ```bash
 # Count tokens in a request (cl100k, approximate for non-cl100k models)
-slimtoken optimize --input request.json                 # default: aggressive (most headroom)
-slimtoken optimize --input request.json --profile safe  # lossless escape hatch
-slimtoken optimize -i request.json -p aggressive --max-input-tokens 8192   # also prune to a budget
+slimtoken optimize --input request.json                 # always-on: full pipeline, most headroom
+slimtoken optimize -i request.json --max-input-tokens 8192   # also prune to a budget
 # stdin works too:  cat request.json | slimtoken optimize
 
 # See recommended local-model configs + measured reduction by GPU VRAM tier
@@ -46,20 +45,24 @@ Run the server with `slimtoken-mcp` (or `python -m slimtoken.mcp_server`) and po
 your MCP client at it over stdio. The MCP tools call the same core pipeline as the
 CLI — nothing is reimplemented.
 
-## Profiles (aggressiveness presets)
-| profile | stages | lossy? | use when |
-|---------|--------|-------|----------|
-| `aggressive` | tools · system · messages · dedup · distill · tool-result compress | yes | DEFAULT — most context headroom |
-| `safe` | tools · system · messages · dedup | no | exact fidelity (debugging, must see raw tool output) |
+## One config, no profiles
+
+There are no named profiles. slimtoken always runs the full pipeline by default —
+tools · system · messages · dedup · distill · tool-result compression. Every stage
+is a raw `SLIMTOKEN_*` env switch; there is no `--profile` flag.
+
+- Turn the whole thing off: `SLIMTOKEN_MINIFY=0` (raw passthrough).
+- Turn off one lossy stage: e.g. `SLIMTOKEN_MINIFY_DISTILL=0` (keep old turns
+  verbatim) or `SLIMTOKEN_TOOL_COMPRESS=0` (keep tool results verbatim).
 
 All stages are **pair-safe**: tool_use/tool_result pairs are never split or
 reordered, and code fences are preserved.
 
 ## Rules
-- `aggressive` is the default — it trades a little fidelity (distilled old
-  turns, compressed tool results) for the most context headroom. Drop to `safe`
-  only when the user needs exact fidelity (e.g. debugging, or the model must see
-  raw tool output verbatim).
+- The default is lossy — it trades a little fidelity (distilled old turns,
+  compressed tool results) for the most context headroom. Reach for
+  `SLIMTOKEN_MINIFY=0` or a per-stage kill-switch only when the user needs exact
+  fidelity (e.g. debugging, or the model must see raw tool output verbatim).
 - Never claim a reduction number — measure it (`slimtoken presets --measure` or
   the stats line from `optimize`). The software computes the real drop.
 - This skill rewrites the request; it does not change tokenizer selection or model

@@ -27,7 +27,7 @@ does not minify them); the common text + tools case — what the pipeline target
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 CANONICAL = "anthropic"
 OPENAI = "openai"

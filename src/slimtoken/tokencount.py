@@ -19,7 +19,7 @@ from __future__ import annotations
 import base64
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from ._deps import HAS_TIKTOKEN, jdumps, xhash
 

@@ -4,7 +4,6 @@ Tests import slimtoken from the package install (or src/ on the path).
 """
 import json
 import os
-import re
 import sys
 import copy
 import socket
@@ -386,9 +385,12 @@ def test_tokencount_no_whole_serialize():
     """tokencount must never json.dumps the whole body just to count tokens."""
     import inspect
     from slimtoken import tokencount
-    src = inspect.getsource(tokencount)
-    # count_obj walks the structure; it must not fall back to serializing the body
+    # count_obj walks the structure; it must not fall back to serializing the
+    # whole body. Inspect its OWN source (not the module's — the module uses
+    # jdumps in the fallback tokenizer path, but count_obj must not).
+    csrc = inspect.getsource(tokencount.count_obj)
     check("tokencount has count_obj", hasattr(tokencount, "count_obj"))
+    check("count_obj does not serialize whole body", "dumps" not in csrc)
     body = {"system": "x" * 500, "messages": [{"role": "user", "content": "y" * 200}]}
     a = tokencount.count_obj(body)
     check("count_obj returns positive int", isinstance(a, int) and a > 0)

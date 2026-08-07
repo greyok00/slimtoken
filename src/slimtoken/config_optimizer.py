@@ -10,7 +10,6 @@ Outputs a ready-to-paste llama-server invocation plus CORTEXAGENT_* env exports
 """
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -149,18 +148,18 @@ def recommend(vram_gb: Optional[float] = None,
 
 def format_report(rec: Recommendation) -> str:
     lines = [
-        f"slimtoken — recommended llama-server args",
-        f"=" * 56,
+        "slimtoken — recommended llama-server args",
+        "=" * 56,
         f"GPU VRAM:        {rec.vram_gb:.1f} GB",
         f"Model:           {rec.model_path or '(size-only)'}",
         f"Weights VRAM:    {rec.weights_gb:.2f} GB",
         f"Est. total:      {rec.est_total_gb:.2f} GB  (margin {rec.margin_gb:+.2f} GB)",
-        f"-" * 56,
+        "-" * 56,
         f"ctx={rec.ctx}  ub={rec.ub}  fa={rec.fa}  ctk/ctv={rec.ctk}/{rec.ctv}  "
         f"ngl={rec.ngl}  np={rec.np}  kv_offload={rec.kv_offload}",
-        f"-" * 56,
+        "-" * 56,
         rec.llama_server_cmd(),
-        f"-" * 56,
+        "-" * 56,
         "# CortexAgent env exports:",
         rec.cortexagent_env(),
     ]

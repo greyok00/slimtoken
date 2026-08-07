@@ -21,38 +21,45 @@ separated or reordered, so tool-call validity is preserved end-to-end.
    `[slimtoken: identical to a later tool_result; omitted N chars]`. **Lossless**
    in practice — the latest copy is always kept verbatim; only stale duplicates
    are stubbed.
-5. **distill** (aggressive only) — summarize old turns. Turns older than
-  `keep_last` (4 for aggressive) are replaced with a short
-  distilled summary. The most recent `keep_last` turns are always kept verbatim.
+5. **distill** — summarize old turns. Turns older than `keep_last` (4 by default)
+  are replaced with a short distilled summary (≤ `distill_max_chars`, 160 by
+  default). The most recent `keep_last` turns are always kept verbatim.
   **Lossy for old turns only** — recent context is untouched.
-6. **tool_compress** (aggressive only, opt-in via `SLIMTOKEN_TOOL_COMPRESS=1` or
-  the `aggressive` profile) — type-specific reduction of large tool_result
-  content: directory listings, git output, logs, JSON, source. Emits a compact
-  representation plus a `[slimtoken-compressed]` metadata header. **Lossy.**
+6. **tool_compress** (on by default; disable via `SLIMTOKEN_TOOL_COMPRESS=0`) —
+  type-specific reduction of large tool_result content: directory listings, git
+  output, logs, JSON, source. Emits a compact representation plus a
+  `[slimtoken-compressed]` metadata header. **Lossy.**
 7. **budget** — prune to a token budget. When set (`token_budget` /
   `--max-input-tokens`), drops leading messages pair-safely (never breaking a
   tool_use/result pair) until under budget. Uses a real cl100k token count and
   incremental prefix sums (O(1) per candidate — no re-serialization).
 
-## Profiles → stages enabled
+## The always-on config (no profiles)
 
-| profile | enabled stages | token_budget | keep_last | distill_max_chars | tool_compress |
-|---------|----------------|--------------|-----------|------------------|---------------|
-| `aggressive` | tools, system, messages, dedup, distill | 131072 | 4 | 160 | on |
-| `safe` | tools, system, messages, dedup | 0 (off) | 8 | 240 | off |
+There are no named profiles. slimtoken runs the full pipeline by default; every
+knob below is a `SLIMTOKEN_*` env switch (override per-process, not per-request).
+Defaults:
 
-`aggressive` is the default. `safe` is the lossless escape hatch (no distill,
-no budget prune, no tool_compress — only the four lossless stages).
+| knob | env var | default | meaning |
+|------|---------|---------|---------|
+| stages | `SLIMTOKEN_MINIFY_<STAGE>` | all on | `tools/system/messages/dedup/distill`; set `<STAGE>=0` to disable one |
+| master | `SLIMTOKEN_MINIFY` | 1 | `0` = raw passthrough (whole pipeline off) |
+| token_budget | `SLIMTOKEN_MINIFY_BUDGET` | 131072 | hard prune cap; `0` = budget stage off |
+| keep_last | `SLIMTOKEN_KEEP_LAST` | 4 | recent turns kept verbatim by distill/budget |
+| distill_max_chars | `SLIMTOKEN_DISTILL_MAX_CHARS` | 160 | max chars per distilled old turn |
+| dedup_min_chars | `SLIMTOKEN_DEDUP_MIN_CHARS` | 200 | only dedup tool results ≥ this long |
+| tool_compress | `SLIMTOKEN_TOOL_COMPRESS` | 1 | lossy tool-result compression |
 
 `token_budget=0` means budget pruning is off; the field is still present in the
 config but `enforce_budget` is a no-op when the budget is 0.
 
-## Env overrides (proxy config; do not change behavior when unset)
+## Env overrides (tune the always-on config; identity when unset)
 - `SLIMTOKEN_MINIFY=0` → disable the whole pipeline (fast-path passthrough).
+- `SLIMTOKEN_MINIFY_<STAGE>=0` → disable one stage (e.g.
+  `SLIMTOKEN_MINIFY_DISTILL=0` to keep old turns verbatim).
 - `SLIMTOKEN_MINIFY_TOOL_SKIP=Read,LS` → skip named tools (case-insensitive,
   prefix match) so critical tools are never minified.
-- `SLIMTOKEN_TOOL_COMPRESS=1` → enable lossy tool-result compression independent
-  of profile.
+- `SLIMTOKEN_TOOL_COMPRESS=0` → turn off lossy tool-result compression.
 - `SLIMTOKEN_MAX_TOKENS=N` / `SLIMTOKEN_STOP=...` → output-side filtering on the
   proxy (cap/truncate streamed completions). Off when unset.
 
