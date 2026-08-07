@@ -9,7 +9,7 @@ without knowing whether slimtoken is installed as a CLI or only exposed via MCP.
 Usage (mirrors the CLI subcommands):
 
     # minify a request body (file or stdin) and print the result + stats
-    python3 scripts/optimize.py optimize [--input FILE] [--profile safe|balanced|aggressive]
+    python3 scripts/optimize.py optimize [--input FILE] [--profile safe|aggressive]
                                           [--max-input-tokens N] [--json]
 
     # list local-model presets by VRAM tier (optionally with measured reduction)
@@ -18,7 +18,7 @@ Usage (mirrors the CLI subcommands):
     # count tokens in a request body (file or stdin)
     python3 scripts/optimize.py estimate [--input FILE] [--model NAME]
 
-With no subcommand, reads a request JSON from stdin and runs `optimize --profile balanced`.
+With no subcommand, reads a request JSON from stdin and runs `optimize --profile aggressive`.
 
 Exit codes: 0 success, 1 no slimtoken available, 2 subcommand error.
 """
@@ -104,8 +104,8 @@ def main(argv=None) -> int:
 
     o = sub.add_parser("optimize")
     o.add_argument("--input", "-i", default=None)
-    o.add_argument("--profile", "-p", default="balanced",
-                   choices=["safe", "balanced", "aggressive"])
+    o.add_argument("--profile", "-p", default="aggressive",
+                   choices=["safe", "aggressive"])
     o.add_argument("--max-input-tokens", type=int, default=None)
     o.add_argument("--json", action="store_true")
 

@@ -331,7 +331,7 @@ def main(argv=None):
 
     o = sub.add_parser("optimize", help="minify a request JSON body (file or stdin) via a profile")
     o.add_argument("--input", "-i", default=None, help="input JSON file (default: stdin)")
-    o.add_argument("--profile", "-p", default="balanced", choices=["safe", "balanced", "aggressive"])
+    o.add_argument("--profile", "-p", default="aggressive", choices=["safe", "aggressive"])
     o.add_argument("--format", "-f", default="anthropic",
                    choices=["anthropic", "openai", "ollama"],
                    help="request body format (anthropic /v1/messages, "

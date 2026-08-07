@@ -1,6 +1,6 @@
 ---
 name: slimtoken-optimizer
-description: Shrink LLM prompts before sending them — collapse duplicate tool results, distill old turns, minify tool schemas and system prompts, and prune to a token budget. Lossless by default; lossy modes are opt-in. Works with any local or cloud model via the slimtoken CLI or MCP server.
+description: Shrink LLM prompts before sending them — collapse duplicate tool results, distill old turns, minify tool schemas and system prompts, and prune to a token budget. Aggressive (lossy) by default for the most context headroom; `safe` is the lossless escape hatch. Works with any local or cloud model via the slimtoken CLI or MCP server.
 ---
 
 # slimtoken-optimizer
@@ -23,14 +23,13 @@ model.
 
 ```bash
 # Count tokens in a request (cl100k, approximate for non-cl100k models)
-slimtoken optimize --input request.json --profile safe        # lossless, prints stats to stderr
-slimtoken optimize --input request.json --profile balanced     # + distill old turns
-slimtoken optimize --input request.json --profile aggressive   # + lossy tool-result compression
+slimtoken optimize --input request.json                 # default: aggressive (most headroom)
+slimtoken optimize --input request.json --profile safe  # lossless escape hatch
 slimtoken optimize -i request.json -p aggressive --max-input-tokens 8192   # also prune to a budget
-# stdin works too:  cat request.json | slimtoken optimize -p balanced
+# stdin works too:  cat request.json | slimtoken optimize
 
 # See recommended local-model configs + measured reduction by GPU VRAM tier
-slimtoken presets --measure            # 4 / 8 / 16 / 24 GB tiers, real % drop
+slimtoken presets --measure            # 4 / 8 / 16 GB tiers, real % drop
 slimtoken presets --vram-gb 8 --measure
 ```
 
@@ -50,16 +49,17 @@ CLI — nothing is reimplemented.
 ## Profiles (aggressiveness presets)
 | profile | stages | lossy? | use when |
 |---------|--------|-------|----------|
-| `safe` | tools · system · messages · dedup | no | default; never loses information |
-| `balanced` | + distill old turns | no | long chats; keeps recent N turns verbatim | 
-| `aggressive` | + lossy tool-result compression | yes | tight VRAM/budget; compact tool output |
+| `aggressive` | tools · system · messages · dedup · distill · tool-result compress | yes | DEFAULT — most context headroom |
+| `safe` | tools · system · messages · dedup | no | exact fidelity (debugging, must see raw tool output) |
 
 All stages are **pair-safe**: tool_use/tool_result pairs are never split or
 reordered, and code fences are preserved.
 
 ## Rules
-- Default to `safe`. Only escalate to `aggressive` when the user asks for max
-  compression or is up against a hard limit.
+- `aggressive` is the default — it trades a little fidelity (distilled old
+  turns, compressed tool results) for the most context headroom. Drop to `safe`
+  only when the user needs exact fidelity (e.g. debugging, or the model must see
+  raw tool output verbatim).
 - Never claim a reduction number — measure it (`slimtoken presets --measure` or
   the stats line from `optimize`). The software computes the real drop.
 - This skill rewrites the request; it does not change tokenizer selection or model

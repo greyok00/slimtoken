@@ -32,18 +32,18 @@ MODEL_PRESETS: List[Dict] = [
      "context": 16384, "profile": "aggressive", "notes": "fast; tight context on 4GB"},
 
     {"vram_gb": 8, "model": "LFM2.5-8B-A1B (MoE, 1.5B active)", "quant": "Q4",
-     "context": 32768, "profile": "balanced", "notes": "~5GB at Q4; real context headroom on 8GB"},
+     "context": 32768, "profile": "aggressive", "notes": "~5GB at Q4; real context headroom on 8GB"},
     {"vram_gb": 8, "model": "Qwen 2.5 7B", "quant": "Q4_K_M",
-     "context": 32768, "profile": "balanced", "notes": "solid general-purpose 7B"},
+     "context": 32768, "profile": "aggressive", "notes": "solid general-purpose 7B"},
     {"vram_gb": 8, "model": "Gemma 3 12B", "quant": "Q4",
      "context": 16384, "profile": "aggressive", "notes": "borderline fit on 8GB; drop context if OOM"},
 
     {"vram_gb": 16, "model": "Qwen 3 14B", "quant": "Q4_K_M",
-     "context": 65536, "profile": "balanced", "notes": "good quality/size balance on 16GB"},
+     "context": 65536, "profile": "aggressive", "notes": "good quality/size balance on 16GB"},
     {"vram_gb": 16, "model": "Mistral Nemo 12B", "quant": "Q4_K_M",
-     "context": 131072, "profile": "balanced", "notes": "large native context; long-context workloads"},
+     "context": 131072, "profile": "aggressive", "notes": "large native context; long-context workloads"},
     {"vram_gb": 16, "model": "Llama 3.1 8B", "quant": "Q4_K_M",
-     "context": 131072, "profile": "balanced", "notes": "fast; lots of context headroom on 16GB"},
+     "context": 131072, "profile": "aggressive", "notes": "fast; lots of context headroom on 16GB"},
 ]
 
 
@@ -117,7 +117,7 @@ def _payload_bloated() -> dict:
 _PAYLOADS = {"typical": _payload_typical, "bloated": _payload_bloated}
 
 
-def measure_reduction(profile: str = "balanced", size: str = "bloated") -> Dict:
+def measure_reduction(profile: str = "aggressive", size: str = "bloated") -> Dict:
     """Run the existing pipeline on a representative payload with a profile.
 
     Returns {"profile", "size", "tokens_in", "tokens_out", "reduction_pct",

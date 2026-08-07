@@ -28,7 +28,7 @@ from . import tools
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "slimtoken-mcp"
-SERVER_VERSION = "0.3.1"
+SERVER_VERSION = "0.3.2"
 
 
 def _send(obj: Dict[str, Any]) -> None:

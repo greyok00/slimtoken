@@ -44,7 +44,7 @@ def _schema_tools() -> List[Dict[str, Any]]:
                                "type": ["string", "array"]},
                     "tools": {"type": "array", "description": "tool definitions to minify"},
                     "profile": {"type": "string", "enum": profile_names(),
-                                "default": "balanced",
+                                "default": "aggressive",
                                 "description": "aggressiveness preset (existing MinifyConfig knobs)"},
                     "max_input_tokens": {"type": "integer",
                                          "description": "override the profile's token_budget (hard prune cap)"},
@@ -243,7 +243,7 @@ def _t_optimize_messages(a: Dict[str, Any]) -> Dict[str, Any]:
     msgs = a.get("messages")
     if not isinstance(msgs, list):
         raise ToolError("messages must be an array")
-    profile = a.get("profile", "balanced")
+    profile = a.get("profile", "aggressive")
     fmt = a.get("format", "anthropic") or "anthropic"
     cfg = profile_config(profile)
     if a.get("max_input_tokens") is not None:

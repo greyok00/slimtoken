@@ -35,7 +35,7 @@ slimtoken serve --upstream http://127.0.0.1:8082        # local llama-server
 slimtoken serve --upstream https://api.anthropic.com   # or cloud
 
 # CLI: minify a request body on demand
-slimtoken optimize -i request.json --profile balanced
+slimtoken optimize -i request.json                     # default profile: aggressive
 slimtoken presets --measure                            # local-model table + measured reduction
 
 # MCP server: stdio JSON-RPC for MCP clients
@@ -89,11 +89,11 @@ stripped from request bodies.
 Total input-token reduction, default config (all stages on), **measured by the
 pipeline itself** on representative payloads — not asserted:
 
-| Scenario | safe | balanced | aggressive |
-|----------|-----:|---------:|-----------:|
-| Typical session (~500 tok) | 9.0% | 9.0% | 9.0% |
-| Bloated session (repeated file reads + verbose history, ~30k tok) | 73.3% | 83.7% | 85.4% |
-| End-to-end vs a live llama-server (model-reported) | — | — | **11.7%** (1,164 → 1,028 tok) |
+| Scenario | safe | aggressive |
+|----------|-----:|-----------:|
+| Typical session (~500 tok) | 9.0% | 9.0% |
+| Bloated session (repeated file reads + verbose history, ~30k tok) | 73.3% | 85.4% |
+| End-to-end vs a live llama-server (model-reported) | — | **11.7%** (1,164 → 1,028 tok) |
 
 Run the measurement yourself:
 
@@ -111,14 +111,13 @@ can see exactly that.
 
 ### Profiles
 
-The three profiles are named presets over the existing config knobs — no new
-heuristics:
+Two named presets over the existing config knobs — no new heuristics.
+`aggressive` is the default; `safe` is the lossless escape hatch:
 
 | profile | stages | lossy? | token_budget | keep_last | use when |
 |---------|--------|:------:|-------------:|----------:|----------|
-| `safe` | tools · system · messages · dedup | no | 0 (off) | 8 | default; never loses information |
-| `balanced` | + distill | no | 131072 | 8 | long chats; recent 8 turns verbatim |
-| `aggressive` | + lossy tool-result compression | **yes** | 32768 | 4 | tight VRAM/budget; compact tool output |
+| `aggressive` | tools · system · messages · dedup · distill · tool_compress | **yes** | 131072 | 4 | **default** — most context headroom; trades a little fidelity for compression |
+| `safe` | tools · system · messages · dedup | no | 0 (off) | 8 | exact fidelity — debugging, or the model must see raw tool output verbatim |
 
 ## Backends — Anthropic, OpenAI, and Ollama
 
@@ -163,21 +162,21 @@ not hand-waved (`slimtoken presets --measure`).
 | 4 GB | Llama 3.2 3B | Q4_K_M | 8 192 | aggressive | 85.4% |
 | 4 GB | Qwen 2.5 3B | Q4_K_M | 32 768 | aggressive | 85.4% |
 | 4 GB | Phi-4 Mini | Q4_0 | 16 384 | aggressive | 85.4% |
-| 8 GB | LFM2.5-8B-A1B (MoE, 1.5B active) | Q4 | 32 768 | balanced | 83.7% |
-| 8 GB | Qwen 2.5 7B | Q4_K_M | 32 768 | balanced | 83.7% |
+| 8 GB | LFM2.5-8B-A1B (MoE, 1.5B active) | Q4 | 32 768 | aggressive | 85.4% |
+| 8 GB | Qwen 2.5 7B | Q4_K_M | 32 768 | aggressive | 85.4% |
 | 8 GB | Gemma 3 12B | Q4 | 16 384 | aggressive | 85.4% |
-| 16 GB | Qwen 3 14B | Q4_K_M | 65 536 | balanced | 83.7% |
-| 16 GB | Mistral Nemo 12B | Q4_K_M | 131 072 | balanced | 83.7% |
-| 16 GB | Llama 3.1 8B | Q4_K_M | 131 072 | balanced | 83.7% |
+| 16 GB | Qwen 3 14B | Q4_K_M | 65 536 | aggressive | 85.4% |
+| 16 GB | Mistral Nemo 12B | Q4_K_M | 131 072 | aggressive | 85.4% |
+| 16 GB | Llama 3.1 8B | Q4_K_M | 131 072 | aggressive | 85.4% |
 
 > Reduction is **profile-dependent, not model-dependent** — the pipeline
 > rewrites the request regardless of which model consumes it. The table maps each
 > tier to its recommended profile; the reduction shown is what that profile
-> delivers on a bloated payload. On a typical session all profiles reduce ~9%.
+> delivers on a bloated payload. On a typical session both profiles reduce ~9%.
 
 ## Effective context window — dense vs MoE
 
-Because slimtoken compresses input ~84%, a model's nominal context window holds
+Because slimtoken compresses input ~85%, a model's nominal context window holds
 **far more raw conversation** than its size suggests. The effective capacity is
 `nominal_ctx / (1 − reduction)`. The presets below push each tier to the largest
 nominal context that **fits fully in VRAM** (q4_0 KV, flash attention, full GPU
@@ -197,10 +196,10 @@ slimtoken high-context --vram-gb 16 --detail   # + the llama-server commands
 |-----:|------|-------|-------|------------:|---------:|-------:|-------------:|
 | 4 GB | dense | Llama 3.2 3B | Q4_K_M | 16 384 | 3.67 | +0.33 | ~112 k |
 | 4 GB | MoE | LFM2.5-8B-A1B | IQ2_S | 32 768 | 3.91 | +0.09 | ~224 k |
-| 8 GB | MoE | LFM2.5-8B-A1B | Q4_K_M | 131 072 | 7.33 | +0.67 | ~804 k |
-| 8 GB | dense | Llama 3.1 8B | Q4_K_M | 32 768 | 7.71 | +0.29 | ~201 k |
-| 16 GB | MoE | Qwen3.6-35B-A3B | IQ3_S | 131 072 | 14.16 | +1.84 | ~804 k |
-| 16 GB | dense | Llama 3.1 8B | Q4_K_M | 262 144 | 14.71 | +1.29 | ~1.6 M |
+| 8 GB | MoE | LFM2.5-8B-A1B | Q4_K_M | 131 072 | 7.33 | +0.67 | ~898 k |
+| 8 GB | dense | Llama 3.1 8B | Q4_K_M | 32 768 | 7.71 | +0.29 | ~224 k |
+| 16 GB | MoE | Qwen3.6-35B-A3B | IQ3_S | 131 072 | 14.16 | +1.84 | ~898 k |
+| 16 GB | dense | Llama 3.1 8B | Q4_K_M | 262 144 | 14.71 | +1.29 | ~1.8 M |
 
 > The 16 GB MoE row is capped at **128 k** — the proven-stable value on a 16 GB
 > card (256 k OOMs at ub=2048; 128 k@ub512 measured 13.7 GB). The 8 GB MoE row is

@@ -14,7 +14,7 @@ Every number is **computed at runtime** by :func:`config_optimizer.recommend`
 (high-side: ``keep_free_gb=0.3`` + RoPE/YaRN extension to 256k) and
 :func:`model_presets.measure_reduction` — none are asserted. The effective
 raw-token capacity is ``nominal_ctx / (1 - reduction)``: because slimtoken
-compresses input ~84%, a 256k window holds ~1.6M raw conversation tokens.
+compresses input ~85%, a 256k window holds ~1.8M raw conversation tokens.
 
 All configs use **q4_0 KV** (``-ctk q4_0 -ctv q4_0``), flash attention on, full
 GPU offload, ``--kv-unified`` — matching a proven local llama-server setup.
@@ -54,11 +54,11 @@ _CONTEXT_MODELS = [
     # is a razor fit (~+0.04 GB margin) — any VRAM fluctuation spills it. 128k
     # leaves ~2 GB headroom and still gives ~800k effective with compression.
     {"vram_gb": 8, "kind": "MoE", "model": "LFM2.5-8B-A1B", "quant": "Q4_K_M",
-     "size_gb": 4.9, "kv_per_token": KV_MOE, "profile": "balanced",
+     "size_gb": 4.9, "kv_per_token": KV_MOE, "profile": "aggressive",
      "native": 131072,
      "notes": "CortexAgent fallback; Mamba-2+MoE tiny KV. 128k for headroom (256k is a razor fit)"},
     {"vram_gb": 8, "kind": "dense", "model": "Llama 3.1 8B", "quant": "Q4_K_M",
-     "size_gb": 4.9, "kv_per_token": KV_DENSE_8B, "profile": "balanced",
+     "size_gb": 4.9, "kv_per_token": KV_DENSE_8B, "profile": "aggressive",
      "notes": "8B dense; smaller context than the MoE on 8GB"},
     {"vram_gb": 8, "kind": "dense", "model": "Llama 3.2 3B", "quant": "Q4_K_M",
      "size_gb": 2.0, "kv_per_token": KV_DENSE_3B, "profile": "aggressive",
@@ -68,11 +68,11 @@ _CONTEXT_MODELS = [
     # 16GB MoE capped at 128k — the proven-stable value on the author's RTX
     # 3080 Ti (256k OOMed at ub=2048; 128k@ub512 measured 13.7GB). native=131072.
     {"vram_gb": 16, "kind": "MoE", "model": "Qwen3.6-35B-A3B", "quant": "IQ3_S",
-     "size_gb": 11.4, "kv_per_token": KV_MOE, "profile": "balanced",
+     "size_gb": 11.4, "kv_per_token": KV_MOE, "profile": "aggressive",
      "native": 131072,
      "notes": "CortexAgent PRIMARY (measured 13.7GB @128k/ub512); proven-stable 128k"},
     {"vram_gb": 16, "kind": "dense", "model": "Llama 3.1 8B", "quant": "Q4_K_M",
-     "size_gb": 4.9, "kv_per_token": KV_DENSE_8B, "profile": "balanced",
+     "size_gb": 4.9, "kv_per_token": KV_DENSE_8B, "profile": "aggressive",
      "notes": "8B dense → 256k; the headline dense config"},
 ]
 

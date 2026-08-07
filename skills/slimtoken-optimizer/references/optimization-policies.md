@@ -21,8 +21,8 @@ separated or reordered, so tool-call validity is preserved end-to-end.
    `[slimtoken: identical to a later tool_result; omitted N chars]`. **Lossless**
    in practice — the latest copy is always kept verbatim; only stale duplicates
    are stubbed.
-5. **distill** (balanced/aggressive only) — summarize old turns. Turns older than
-  `keep_last` (default 8 balanced, 4 aggressive) are replaced with a short
+5. **distill** (aggressive only) — summarize old turns. Turns older than
+  `keep_last` (4 for aggressive) are replaced with a short
   distilled summary. The most recent `keep_last` turns are always kept verbatim.
   **Lossy for old turns only** — recent context is untouched.
 6. **tool_compress** (aggressive only, opt-in via `SLIMTOKEN_TOOL_COMPRESS=1` or
@@ -38,9 +38,11 @@ separated or reordered, so tool-call validity is preserved end-to-end.
 
 | profile | enabled stages | token_budget | keep_last | distill_max_chars | tool_compress |
 |---------|----------------|--------------|-----------|------------------|---------------|
+| `aggressive` | tools, system, messages, dedup, distill | 131072 | 4 | 160 | on |
 | `safe` | tools, system, messages, dedup | 0 (off) | 8 | 240 | off |
-| `balanced` | + distill | 131072 | 8 | 240 | off |
-| `aggressive` | + distill | 32768 | 4 | 160 | on |
+
+`aggressive` is the default. `safe` is the lossless escape hatch (no distill,
+no budget prune, no tool_compress — only the four lossless stages).
 
 `token_budget=0` means budget pruning is off; the field is still present in the
 config but `enforce_budget` is a no-op when the budget is 0.

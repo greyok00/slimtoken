@@ -147,7 +147,7 @@ def test_optimize_messages():
                                "arguments": {"messages": body["messages"],
                                              "system": body["system"],
                                              "tools": body["tools"],
-                                             "profile": "balanced"}}})
+                                             "profile": "aggressive"}}})
         o = json.loads(r["result"]["content"][0]["text"])
         check("optimize reports tokens_in > tokens_out",
               o["tokens_in"] > o["tokens_out"])
@@ -169,7 +169,7 @@ def test_optimize_messages():
                         result_ids.add(blk.get("tool_use_id"))
         check("pair-safe: all tool_use ids have results",
               use_ids == result_ids, f"use={use_ids} result={result_ids}")
-        check("optimize echoes profile", o["profile"] == "balanced")
+        check("optimize echoes profile", o["profile"] == "aggressive")
     finally:
         c.close()
 
