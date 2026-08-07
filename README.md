@@ -1,43 +1,60 @@
 # slimtoken
 
-🔀 A token-optimization proxy that sits between an Anthropic-compatible client
-and its backend — a local llama-server or a cloud API.
+🔀 A token-optimization layer that sits between an Anthropic-compatible client and
+its backend — a local llama-server or a cloud API — and rewrites every request to
+use **fewer tokens** before forwarding it.
 
-It rewrites every request to use **fewer tokens** before forwarding it: tool
-schemas are trimmed, the system prompt is compressed, old turns are distilled,
-repeated tool results are collapsed, and (opt-in) tool output is type-compressed.
-Fewer input tokens → faster prompt-eval, lower cost, more context headroom. It
-also ships a backend optimizer that recommends llama-server arguments tuned to
-your GPU.
+Tool schemas are trimmed, the system prompt is compressed, old turns are
+distilled, repeated tool results are collapsed, and (opt-in) tool output is
+type-compressed. Fewer input tokens → faster prompt-eval, lower cost, more
+context headroom. It also ships a backend optimizer that recommends
+llama-server arguments tuned to your GPU.
 
-Point `ANTHROPIC_BASE_URL` at it. MIT-licensed. Ships with `orjson`, `xxhash`,
-and `tiktoken` for fast JSON, hashing, and real token counting. Every
-lossless optimization is **on by default** — there are no opt-in flags, only
-opt-out kill-switches. The two lossy modes (tool compression, output filtering)
-are opt-in.
+You can use slimtoken three ways — **all driven by the same core pipeline, none
+reimplemented**:
+
+| Way | How | Best for |
+|-----|-----|----------|
+| 🔀 **Proxy** | Point `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` / `OLLAMA_HOST` at `slimtoken serve` | Transparent, always-on — works with any Anthropic, OpenAI, or Ollama client that honors those env vars (Claude Code, curl, SDKs) |
+| 🛠️ **MCP server** | `slimtoken-mcp` over stdio | Hosts that speak MCP (Claude Desktop, ADK, Cursor, Gemini CLI) — call pipeline functions as tools |
+| 📦 **Agent Skill + CLI** | `slimtoken optimize` / `slimtoken presets` / `slimtoken high-context` | On-demand minification + VRAM configs from a script or a skill-loaded agent |
+
+MIT-licensed. Ships with `orjson`, `xxhash`, and `tiktoken` for fast JSON,
+hashing, and real token counting. Every **lossless** optimization is on by
+default — no opt-in flags, only opt-out kill-switches. The two **lossy** modes
+(tool compression, output filtering) are opt-in.
 
 ## Install
 
 ```bash
-bash scripts/install.sh                                # wires ANTHROPIC_BASE_URL
-slimtoken serve --upstream http://127.0.0.1:8082       # local llama-server
-slimtoken serve --upstream https://api.anthropic.com  # or cloud
+pip install slimtoken
+
+# Proxy: wire ANTHROPIC_BASE_URL at the proxy, then run it
+slimtoken install
+slimtoken serve --upstream http://127.0.0.1:8082        # local llama-server
+slimtoken serve --upstream https://api.anthropic.com   # or cloud
+
+# CLI: minify a request body on demand
+slimtoken optimize -i request.json --profile balanced
+slimtoken presets --measure                            # local-model table + measured reduction
+
+# MCP server: stdio JSON-RPC for MCP clients
+slimtoken-mcp                                          # or: python -m slimtoken.mcp_server
 ```
 
-Uninstall: `bash scripts/uninstall.sh` (or `slimtoken uninstall`).
+Uninstall the proxy wiring: `slimtoken uninstall` (or `bash scripts/uninstall.sh`).
 
-Install only writes a marker block to your shell rc that exports
-`ANTHROPIC_BASE_URL` (prior value backed up to `~/.slimtoken/prev_env` and
-restored on uninstall). It never touches `settings.json`, `CLAUDE.md`, or
-`mcp.json`, so removal is clean and fully reversible.
+`slimtoken install` only writes a marker block to your shell rc that exports
+`ANTHROPIC_BASE_URL` (prior value backed up to `~/.slimtoken/prev_env` and restored
+on uninstall). It never touches `settings.json`, `CLAUDE.md`, or `mcp.json`, so
+removal is clean and fully reversible.
 
 ## How it works — the proxy optimization stack
 
-A six-stage minify pipeline runs on each request, all on by default. The
-diagram shows the request lifecycle with the `t0–t4` latency boundaries the
-proxy records per request — **proxy-side work** (ingress + optimize) is what
-slimtoken controls; **model-side** (forward → first token → final token) is
-where real time goes.
+A six-stage minify pipeline runs on each request, all on by default. The diagram
+shows the request lifecycle with the `t0–t4` latency boundaries the proxy records
+per request — **proxy-side work** (ingress + optimize) is what slimtoken controls;
+**model-side** (forward → first token → final token) is where real time goes.
 
 ```mermaid
 sequenceDiagram
@@ -62,36 +79,213 @@ sequenceDiagram
 | 📝 distill | Truncate old assistant prose beyond the last `SLIMTOKEN_KEEP_LAST` (8) turns to 240 chars/turn. Fence-aware, preserves tool blocks, no model call. |
 | 🎯 budget | Hard token cap (`SLIMTOKEN_MINIFY_BUDGET`, 131072); drops a leading prefix pair-safely — only when over budget. |
 
-**Safety guarantees** — code fences (``` / ~~~) preserved byte-identical;
-pruning is pair-safe (a `tool_result` is never orphaned from its `tool_use`);
-identity-based change detection returns unchanged content zero-copy; the
-`grammar` field is stripped from request bodies.
+**Safety guarantees** — code fences (``` / ~~~) preserved byte-identical; pruning
+is pair-safe (a `tool_result` is never orphaned from its `tool_use`); identity-based
+change detection returns unchanged content zero-copy; the `grammar` field is
+stripped from request bodies.
 
 ## Input optimization (total)
 
-Total input-token reduction, default config (all stages on):
+Total input-token reduction, default config (all stages on), **measured by the
+pipeline itself** on representative payloads — not asserted:
 
-| Scenario | Reduction |
-|----------|----------:|
-| Typical session | ~15% |
-| Bloated session (repeated file reads + verbose history) | up to **81%** |
-| End-to-end, model-reported vs a live llama-server | **11.7%** (1,164 → 1,028 tokens) |
+| Scenario | safe | balanced | aggressive |
+|----------|-----:|---------:|-----------:|
+| Typical session (~500 tok) | 9.0% | 9.0% | 9.0% |
+| Bloated session (repeated file reads + verbose history, ~30k tok) | 73.3% | 83.7% | 85.4% |
+| End-to-end vs a live llama-server (model-reported) | — | — | **11.7%** (1,164 → 1,028 tok) |
+
+Run the measurement yourself:
+
+```bash
+slimtoken presets --measure                    # recompute the table above on your machine
+python3 bench/benchmark.py                     # payload + latency breakdown
+python3 bench/benchmark.py --backend http://127.0.0.1:8082   # + end-to-end vs a live backend
+slimtoken latency                             # one request → t0-t4 printout
+```
 
 Proxy latency is ~12 ms per request (optimize stage, warm) — negligible next to
 any LLM round-trip. The win is **fewer tokens sent**, not proxy speed. The
 `t0–t4` instrumentation separates slimtoken's work from model generation so you
-can see exactly that:
+can see exactly that.
+
+### Profiles
+
+The three profiles are named presets over the existing config knobs — no new
+heuristics:
+
+| profile | stages | lossy? | token_budget | keep_last | use when |
+|---------|--------|:------:|-------------:|----------:|----------|
+| `safe` | tools · system · messages · dedup | no | 0 (off) | 8 | default; never loses information |
+| `balanced` | + distill | no | 131072 | 8 | long chats; recent 8 turns verbatim |
+| `aggressive` | + lossy tool-result compression | **yes** | 32768 | 4 | tight VRAM/budget; compact tool output |
+
+## Backends — Anthropic, OpenAI, and Ollama
+
+The proxy routes by URL path and the CLI/MCP accept a `--format` / `format` arg.
+The minify pipeline is built around Anthropic's request shape; OpenAI and Ollama
+bodies are normalized to that canonical form, minified, then converted back — a
+thin adapter layer, **no optimization logic is duplicated**. The Anthropic path is
+identity (zero work, byte-identical to before).
+
+| path | format | conversion |
+|------|--------|------------|
+| `/v1/messages` | `anthropic` | none (identity) |
+| `/v1/chat/completions` | `openai` | `role:"system"` → top-level `system`; `assistant.tool_calls` → `tool_use` blocks; `role:"tool"` → `tool_result` blocks; `function.parameters` → `input_schema` |
+| `/api/chat`, `/api/generate` | `ollama` | reuses the OpenAI conversion; Ollama-only fields (`options`, `format`, `keep_alive`) pass through |
+
+Pair-safety is preserved across the round trip: an assistant tool call plus its
+following `role:"tool"` replies become Anthropic `tool_use` + `tool_result` blocks,
+the pipeline drops such pairs together, and the reverse conversion never orphans a
+tool result from its call.
 
 ```bash
-python3 bench/benchmark.py                                 # payload + latency breakdown
-python3 bench/benchmark.py --backend http://127.0.0.1:8082  # + end-to-end vs a live backend
-slimtoken latency                                          # one request → t0-t4 printout
+# proxy: point any of these at slimtoken; it detects the format from the path
+export OPENAI_BASE_URL=http://127.0.0.1:8181/v1     # OpenAI clients → /v1/chat/completions
+export OLLAMA_HOST=127.0.0.1:8181                    # Ollama clients → /api/chat
+slimtoken serve --upstream http://127.0.0.1:11434   # → your local Ollama
+
+# CLI: minify an OpenAI/Ollama body directly
+slimtoken optimize -f openai  -i req.json
+slimtoken optimize -f ollama  -i req.json
 ```
+
+## Local-model presets by VRAM
+
+Recommended configs for common local models grouped by GPU VRAM tier, each with a
+slimtoken profile and usable context (KV cache + overhead eat into the nominal
+max). The **reduction** column is the live measured token drop that model's
+recommended profile achieves on the bloated payload — computed by the pipeline,
+not hand-waved (`slimtoken presets --measure`).
+
+| VRAM | model | quant | usable ctx | profile | reduction |
+|-----:|-------|-------|----------:|---------|--------:|
+| 4 GB | Llama 3.2 3B | Q4_K_M | 8 192 | aggressive | 85.4% |
+| 4 GB | Qwen 2.5 3B | Q4_K_M | 32 768 | aggressive | 85.4% |
+| 4 GB | Phi-4 Mini | Q4_0 | 16 384 | aggressive | 85.4% |
+| 8 GB | LFM2.5-8B-A1B (MoE, 1.5B active) | Q4 | 32 768 | balanced | 83.7% |
+| 8 GB | Qwen 2.5 7B | Q4_K_M | 32 768 | balanced | 83.7% |
+| 8 GB | Gemma 3 12B | Q4 | 16 384 | aggressive | 85.4% |
+| 16 GB | Qwen 3 14B | Q4_K_M | 65 536 | balanced | 83.7% |
+| 16 GB | Mistral Nemo 12B | Q4_K_M | 131 072 | balanced | 83.7% |
+| 16 GB | Llama 3.1 8B | Q4_K_M | 131 072 | balanced | 83.7% |
+| 24 GB | Qwen 3 32B | Q4_K_M | 131 072 | balanced | 83.7% |
+| 24 GB | DeepSeek-V2 / V3 distill 16B | Q4_K_M | 131 072 | balanced | 83.7% |
+| 24 GB | Llama 3.3 70B | Q3_K_M | 32 768 | balanced | 83.7% |
+
+> Reduction is **profile-dependent, not model-dependent** — the pipeline
+> rewrites the request regardless of which model consumes it. The table maps each
+> tier to its recommended profile; the reduction shown is what that profile
+> delivers on a bloated payload. On a typical session all profiles reduce ~9%.
+
+## Effective context window — dense vs MoE
+
+Because slimtoken compresses input ~84%, a model's nominal context window holds
+**far more raw conversation** than its size suggests. The effective capacity is
+`nominal_ctx / (1 − reduction)`. The presets below push each tier to the largest
+nominal context that **fits fully in VRAM** (q4_0 KV, flash attention, full GPU
+offload, `--kv-unified`) — computed by the backend optimizer, not asserted — and
+show the effective raw-token capacity with compression. Each tier has both a
+**dense** and a **MoE/Mamba-hybrid** option: hybrids (Qwen3.6-35B-A3B, LFM2.5-8B-A1B)
+have ~5 KB/token KV vs ~30 KB/token for dense, so they reach far larger contexts on
+the same VRAM.
+
+```bash
+slimtoken high-context                 # full table (all tiers, dense + MoE)
+slimtoken high-context --vram-gb 16    # one tier
+slimtoken high-context --vram-gb 16 --detail   # + the llama-server commands
+```
+
+| tier | kind | model | quant | nominal ctx | total GB | margin | effective ctx |
+|-----:|------|-------|-------|------------:|---------:|-------:|-------------:|
+| 4 GB | dense | Llama 3.2 3B | Q4_K_M | 16 384 | 3.67 | +0.33 | ~112 k |
+| 4 GB | MoE | LFM2.5-8B-A1B | IQ2_S | 32 768 | 3.91 | +0.09 | ~224 k |
+| 8 GB | MoE | LFM2.5-8B-A1B | Q4_K_M | 262 144 | 7.96 | +0.04 | ~1.6 M |
+| 8 GB | dense | Llama 3.1 8B | Q4_K_M | 32 768 | 7.71 | +0.29 | ~201 k |
+| 16 GB | MoE | Qwen3.6-35B-A3B | IQ3_S | 131 072 | 14.16 | +1.84 | ~804 k |
+| 16 GB | dense | Llama 3.1 8B | Q4_K_M | 262 144 | 14.71 | +1.29 | ~1.6 M |
+| 24 GB | MoE | Qwen3.6-35B-A3B | IQ3_S | 262 144 | 14.78 | +9.22 | ~1.6 M |
+| 24 GB | dense | Qwen 3 14B | Q4_K_M | 262 144 | 21.01 | +2.99 | ~1.6 M |
+
+> The 16 GB MoE row is capped at **128 k** — the proven-stable value on a 16 GB
+> card (256 k OOMs at ub=2048; 128 k@ub512 measured 13.7 GB). The 8 GB MoE row is
+> a razor fit (+0.04 GB margin); drop to the dense 8B or a smaller context for
+> headroom. The 4 GB MoE at 2-bit is a quality trade-off — the dense 3B is usually
+> the better 4 GB pick. All configs use q4_0 KV (`-ctk q4_0 -ctv q4_0`) matching a
+> proven local llama-server setup.
+
+## MCP server
+
+`slimtoken-mcp` exposes the pipeline as MCP tools over **stdio** (the transport
+every local MCP client uses). It is a thin adapter: every tool imports and calls
+an existing core function — **no optimization is reimplemented**. The proxy and
+the MCP server are independent processes that share the same library.
+
+| Tool | Calls | What it returns |
+|------|-------|-----------------|
+| `slimtoken.optimize_messages` | `minify_request` + profile | minified messages/system/tools + token counts + per-stage stats |
+| `slimtoken.estimate_tokens` | `count_obj` / `count_messages` | total + per-message token breakdown (cl100k, bundled) |
+| `slimtoken.prune_context` | `prune_context` | a ready-to-inject `<cold_memory>/<recent_context>` prompt block |
+| `slimtoken.minify_tool_result` | `compress_content` | a type-compressed tool_result content block (lossy) |
+| `slimtoken.inspect_budget` | `count_*` + `enforce_budget` | read-only token-budget headroom + would-drop count |
+| `slimtoken.get_config` | `profile_config` / `build_minify_cfg` | the active MinifyConfig (profile or env-derived) |
+| `slimtoken.list_model_presets` | `preset_with_reduction` | VRAM-tier presets, optionally with live measured reduction |
+| `slimtoken.high_context_presets` | `list_context_presets` | high-context dense+MoE presets per tier, with effective context after compression |
+
+`optimize_messages`, `estimate_tokens`, and `inspect_budget` accept a `format`
+field (`anthropic` / `openai` / `ollama`); non-anthropic bodies are normalized to
+canonical before the pipeline runs and returned in the caller's format.
+
+Wire it into an MCP client's stdio config (example for Claude Desktop /
+`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "slimtoken": {
+      "command": "slimtoken-mcp"
+    }
+  }
+}
+```
+
+The server speaks the MCP JSON-RPC 2.0 protocol (initialize → tools/list →
+tools/call), protocol version `2024-11-05`, and is self-contained (stdlib only on
+top of slimtoken's existing deps). It does no optimization itself — every call
+dispatches to the core pipeline.
+
+## Agent Skill
+
+The `skills/slimtoken-optimizer/` directory is a packaged **Agent Skill** (static
+files a host agent runtime — Claude Code, ADK, Gemini CLI, Cursor — reads from
+disk on activation, not a running process). It is **model-agnostic** and works
+with local, cloud, or uncensored models: it rewrites the request, not the model.
+
+```
+skills/slimtoken-optimizer/
+  SKILL.md                          # L1 description (~50 tok) + L2 body (<800 tok)
+  references/optimization-policies.md  # full stage list + pair-safety rules (loaded on demand)
+  scripts/optimize.py               # wrapper: CLI primary, MCP stdio fallback
+```
+
+The wrapper shells out to the `slimtoken` CLI when available, and falls back to a
+one-shot MCP stdio call (`slimtoken-mcp`) when only the MCP server is installed —
+so the skill works regardless of which surface the host has:
+
+```bash
+python3 skills/slimtoken-optimizer/scripts/optimize.py optimize -i req.json -p aggressive
+python3 skills/slimtoken-optimizer/scripts/optimize.py presets --vram-gb 16 --measure
+python3 skills/slimtoken-optimizer/scripts/optimize.py estimate -i req.json
+```
+
+Drop the `skills/slimtoken-optimizer/` directory into your agent's skill search
+path and the host runtime surfaces it when a prompt matches "shrink / minimize /
+trim tokens / context too long".
 
 ## Lossy modes (opt-in)
 
 Two modes are **off by default** because they discard information. Enable them
-only when you know the trade-off is worth it.
+only when the trade-off is worth it.
 
 | Mode | Env | What it does |
 |------|-----|--------------|
@@ -178,14 +372,15 @@ safe values for your specific VRAM automatically.
 ## Tests
 
 ```bash
-python3 tests/test_all.py        # 82 checks
+python3 tests/test_all.py          # 172 checks — core pipeline + proxy + adapters + context presets
+python3 tests/test_mcp_server.py   # 60 checks — MCP stdio server (all 8 tools)
 ```
 
-Covers fence byte-identity, pair-safety, dedup, distill, ≥50% default reduction
+Cover fence byte-identity, pair-safety, dedup, distill, ≥50% default reduction
 on a bloated payload, real-tokenizer counting (no whole-body serialize),
-single-pass equivalence, type-compressor pair-safety, output-filter
-truncation, async proxy end-to-end, `/metrics` latency buckets, and fast-path
-byte-identical passthrough.
+single-pass equivalence, type-compressor pair-safety, output-filter truncation,
+async proxy end-to-end, `/metrics` latency buckets, fast-path byte-identical
+passthrough, and the full MCP stdio handshake + every tool + the error paths.
 
 ## License
 

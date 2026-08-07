@@ -29,6 +29,7 @@ import httpx
 from .pipeline import minify_request, MinifyConfig
 from .upstream import Upstream
 from ._deps import jloads, jdumps
+from . import adapters
 from . import __version__
 
 # ── latency / token metrics ──────────────────────────────────────────────────
@@ -194,8 +195,11 @@ def _is_fast_path(body: bytes) -> bool:
         return True
     if len(body) > _FAST_PATH_MAX:
         return False
-    # cheap byte probe (no full parse): look for signals that stages would act on
-    if b'"tool_result"' in body or b'"tools"' in body or b'"system"' in body:
+    # cheap byte probe (no full parse): look for signals that stages would act on.
+    # covers Anthropic (tool_result/system) AND OpenAI/Ollama (tool_calls/role:tool).
+    if (b'"tool_result"' in body or b'"tools"' in body or b'"system"' in body
+            or b'"tool_calls"' in body or b'"role": "tool"' in body
+            or b'"role":"tool"' in body):
         return False
     # small body with no tool_result/tools/system — only messages, and minify of
     # short text is ~zero gain. Still, messages minify collapses blanks; to be
@@ -204,7 +208,7 @@ def _is_fast_path(body: bytes) -> bool:
 
 
 # ── minify (sync CPU; inline on the loop) ──────────────────────────────────────
-def _minify_body(body: bytes) -> bytes:
+def _minify_body(body: bytes, fmt: str = "anthropic") -> bytes:
     try:
         parsed = jloads(body)
     except Exception as e:
@@ -213,9 +217,15 @@ def _minify_body(body: bytes) -> bytes:
     if isinstance(parsed, dict):
         if "grammar" in parsed:
             del parsed["grammar"]
+        # normalize to Anthropic canonical for the (frozen) pipeline, then back.
+        # fmt="anthropic" (default) skips both branches → byte-identical to before.
+        if fmt != "anthropic":
+            parsed = adapters.to_canonical(parsed, fmt)
         if _CFG.enabled_stages:
             parsed, stats = minify_request(parsed, _CFG)
-            print(f"[proxy] minify: {stats.summary()}", file=sys.stderr)
+            print(f"[proxy] minify ({fmt}): {stats.summary()}", file=sys.stderr)
+        if fmt != "anthropic":
+            parsed = adapters.from_canonical(parsed, fmt)
         return jdumps(parsed)
     return body
 
@@ -334,9 +344,11 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
             await writer.drain()
             return
 
-        # optimize (or fast-path passthrough, unparsed)
+        # optimize (or fast-path passthrough, unparsed). route by path to detect
+        # the request format (anthropic /v1/messages, openai /v1/chat/completions,
+        # ollama /api/chat); anthropic (default) skips the adapter branches.
         if method == "POST" and not _is_fast_path(body):
-            out_body = _minify_body(body)
+            out_body = _minify_body(body, adapters.detect(path) or "anthropic")
         else:
             out_body = body
         ctx.t2 = time.perf_counter()

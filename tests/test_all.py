@@ -594,13 +594,167 @@ def test_output_filter():
     check("non-data frame passes through", out == b": ping\n\n")
 
 
+# ── adapters (OpenAI/Ollama ↔ Anthropic canonical) ───────────────────────────
+def test_adapters():
+    from slimtoken import adapters
+
+    # detect() by URL path
+    check("detect /v1/messages → anthropic",
+          adapters.detect("https://api.x.com/v1/messages") == "anthropic")
+    check("detect /v1/chat/completions → openai",
+          adapters.detect("https://api.x.com/v1/chat/completions") == "openai")
+    check("detect /api/chat → ollama",
+          adapters.detect("http://localhost:11434/api/chat") == "ollama")
+    check("detect /api/generate → ollama",
+          adapters.detect("http://localhost:11434/api/generate") == "ollama")
+    check("detect unknown → None",
+          adapters.detect("https://x.com/other") is None)
+    check("detect strips query string",
+          adapters.detect("/v1/messages?beta=true") == "anthropic")
+
+    # anthropic is identity (no conversion, no copy needed)
+    body_anth = {"system": "s", "messages": [{"role": "user", "content": "hi"}]}
+    check("anthropic to_canonical identity",
+          adapters.to_canonical(body_anth, "anthropic") is body_anth)
+    check("anthropic from_canonical identity",
+          adapters.from_canonical(body_anth, "anthropic") is body_anth)
+
+    # OpenAI → canonical: system message hoisted, tool_calls → tool_use, role:tool → tool_result
+    openai_body = {
+        "model": "gpt-x", "max_tokens": 100, "stream": True,
+        "messages": [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "list files"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "c1", "type": "function",
+                             "function": {"name": "ls", "arguments": '{"path":"."}'}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "a.txt\nb.txt"},
+        ],
+        "tools": [{"type": "function", "function": {
+            "name": "ls", "description": "list",
+            "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}}],
+    }
+    canon = adapters.to_canonical(openai_body, "openai")
+    check("openai→canon top-level system", canon.get("system") == "You are helpful.")
+    check("openai→canon model carried", canon.get("model") == "gpt-x")
+    check("openai→canon max_tokens carried", canon.get("max_tokens") == 100)
+    # messages: user, assistant w/ tool_use, user w/ tool_result
+    roles = [m["role"] for m in canon["messages"]]
+    check("openai→canon roles", roles == ["user", "assistant", "user"],
+          f"{roles}")
+    asst = [m for m in canon["messages"] if m["role"] == "assistant"][0]
+    tu = [b for b in asst["content"] if b.get("type") == "tool_use"]
+    check("openai→canon tool_use block", len(tu) == 1 and tu[0]["id"] == "c1"
+          and tu[0]["name"] == "ls")
+    check("openai→canon tool_use input parsed to dict",
+          tu[0]["input"] == {"path": "."}, f"{tu[0]['input']}")
+    usr_results = [m for m in canon["messages"] if m["role"] == "user"]
+    tr = [b for b in usr_results[-1]["content"] if b.get("type") == "tool_result"]
+    check("openai→canon tool_result block", len(tr) == 1 and tr[0]["tool_use_id"] == "c1")
+    check("openai→canon tool input_schema",
+          canon["tools"][0]["input_schema"]["properties"]["path"]["type"] == "string")
+
+    # canonical → OpenAI: reverse it
+    back = adapters.from_canonical(canon, "openai")
+    back_roles = [m["role"] for m in back["messages"]]
+    check("canon→openai has system role", back_roles[0] == "system")
+    tc_back = [m for m in back["messages"] if m.get("tool_calls")]
+    check("canon→openai assistant tool_calls restored", len(tc_back) == 1)
+    check("canon→openai tool_call args JSON string",
+          isinstance(tc_back[0]["tool_calls"][0]["function"]["arguments"], str))
+    tool_back = [m for m in back["messages"] if m["role"] == "tool"]
+    check("canon→openai role:tool restored", len(tool_back) == 1
+          and tool_back[0]["tool_call_id"] == "c1")
+    check("canon→openai tool parameters restored",
+          back["tools"][0]["function"]["parameters"]["properties"]["path"]["type"] == "string")
+
+    # ollama reuses openai conversion (same shape); passthrough of ollama-only fields
+    ollama_body = {"model": "llama3", "messages": [{"role": "user", "content": "hi"}],
+                   "options": {"temperature": 0.2}, "keep_alive": "5m", "format": "json"}
+    canon_o = adapters.to_canonical(ollama_body, "ollama")
+    check("ollama→canon options carried", canon_o.get("options") == {"temperature": 0.2})
+    check("ollama→canon keep_alive carried", canon_o.get("keep_alive") == "5m")
+    check("ollama→canon format carried", canon_o.get("format") == "json")
+    back_o = adapters.from_canonical(canon_o, "ollama")
+    check("ollama round-trip options survive", back_o.get("options") == {"temperature": 0.2})
+    check("ollama round-trip keep_alive survives", back_o.get("keep_alive") == "5m")
+
+    # pair-safety across round trip: consecutive tool results merge into one user msg
+    multi = {"messages": [
+        {"role": "user", "content": "do both"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "a", "type": "function", "function": {"name": "f1", "arguments": "{}"}},
+            {"id": "b", "type": "function", "function": {"name": "f2", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "a", "content": "r1"},
+        {"role": "tool", "tool_call_id": "b", "content": "r2"},
+    ]}
+    cm = adapters.to_canonical(multi, "openai")["messages"]
+    # one assistant w/ two tool_use, one user w/ two tool_result
+    asst2 = [m for m in cm if m["role"] == "assistant"][0]
+    check("pair-safety: two tool_use in one assistant",
+          len([b for b in asst2["content"] if b.get("type") == "tool_use"]) == 2)
+    usr2 = [m for m in cm if m["role"] == "user"][-1]
+    check("pair-safety: two tool_result merged into one user",
+          len([b for b in usr2["content"] if b.get("type") == "tool_result"]) == 2)
+    # reverse preserves both tool replies
+    back2 = adapters.from_canonical({"messages": cm}, "openai")
+    tool2 = [m for m in back2["messages"] if m["role"] == "tool"]
+    check("pair-safety reverse: two role:tool restored", len(tool2) == 2)
+
+
+# ── context_presets (high-context VRAM tiers, dense + MoE) ───────────────────
+def test_context_presets():
+    from slimtoken import context_presets as cp
+
+    rows = cp.list_context_presets()
+    check("presets cover all tiers", {r["vram_gb"] for r in rows} == {4, 8, 16, 24},
+          f"{sorted({r['vram_gb'] for r in rows})}")
+    check("every tier has dense + MoE",
+          all(any(r["kind"] == "dense" for r in rows if r["vram_gb"] == t)
+              and any(r["kind"] == "MoE" for r in rows if r["vram_gb"] == t)
+              for t in (4, 8, 16, 24)))
+
+    for r in rows:
+        tid = f"{r['vram_gb']}GB {r['kind']}"
+        check(f"{tid} fits in VRAM (total<=vram)",
+              r["total_gb"] <= r["vram_gb"], f"total={r['total_gb']}")
+        check(f"{tid} margin >= 0", r["margin_gb"] >= 0, f"margin={r['margin_gb']}")
+        check(f"{tid} effective > nominal",
+              r["effective_ctx"] > r["nominal_ctx"],
+              f"{r['effective_ctx']} vs {r['nominal_ctx']}")
+        check(f"{tid} q4_0 KV", r["kv_quant"] == "q4_0")
+        check(f"{tid} has llama_cmd", isinstance(r["llama_cmd"], str) and "llama-server" in r["llama_cmd"])
+        check(f"{tid} ub present", isinstance(r["ub"], int) and r["ub"] > 0)
+
+    # 16GB MoE is capped at 128k (the proven-stable value), not the 256k high side
+    moe16 = [r for r in rows if r["vram_gb"] == 16 and r["kind"] == "MoE"][0]
+    check("16GB MoE capped at 128k", moe16["nominal_ctx"] == 131072,
+          f"{moe16['nominal_ctx']}")
+    check("16GB MoE is Qwen3.6-35B-A3B", moe16["model"] == "Qwen3.6-35B-A3B")
+
+    # vram filter
+    only8 = cp.list_context_presets(8)
+    check("vram filter 8 returns only 8GB", all(r["vram_gb"] == 8 for r in only8)
+          and len(only8) >= 2)
+
+    # best_context_for_tier returns the max effective
+    best16 = cp.best_context_for_tier(16)
+    all16 = cp.list_context_presets(16)
+    check("best_context_for_tier picks max effective",
+          best16["effective_ctx"] == max(r["effective_ctx"] for r in all16),
+          f"{best16['effective_ctx']}")
+    check("best_context_for_tier None on unknown tier",
+          cp.best_context_for_tier(2) is None)
+
+
 def main():
     tests = [test_fences, test_tools, test_system_and_budget, test_config_optimizer,
              test_install_uninstall, test_dedup, test_distill,
              test_pair_safety_defaults, test_default_reduction, test_lazy_mcp_smoke,
              test_proxy_e2e, test_tokencount_no_whole_serialize,
              test_single_pass_equivalence, test_proxy_metrics_and_fastpath,
-             test_tool_result_compress, test_output_filter]
+             test_tool_result_compress, test_output_filter,
+             test_adapters, test_context_presets]
     print(f"slimtoken v{__version__} — running {len(tests)} test groups")
     for t in tests:
         print(f"\n[{t.__name__}]")

@@ -200,6 +200,89 @@ def cmd_lazy_mcp(args):
     lazy_mcp.run_server(args.name)
 
 
+def cmd_optimize(args):
+    """Minify a request body read from a file or stdin; print result + stats."""
+    import json as _json
+    import copy
+    if args.input and args.input != "-":
+        raw = Path(args.input).read_text()
+    else:
+        raw = sys.stdin.read()
+    body = _json.loads(raw)
+    profile = args.profile
+    fmt = args.format
+    from .profiles import profile_config
+    from .pipeline import minify_request
+    from .tokencount import count_obj
+    from . import adapters
+    if fmt != "anthropic":
+        body = adapters.to_canonical(body, fmt)
+    cfg = profile_config(profile)
+    if args.max_input_tokens is not None:
+        cfg.token_budget = int(args.max_input_tokens)
+    tin = count_obj(body)
+    out, stats = minify_request(copy.deepcopy(body), cfg)
+    tout = count_obj(out)
+    if fmt != "anthropic":
+        out = adapters.from_canonical(out, fmt)
+    if args.json:
+        print(_json.dumps(out, ensure_ascii=False, default=str))
+    else:
+        print(_json.dumps(out.get("messages", body.get("messages")), ensure_ascii=False, default=str))
+        if "system" in out:
+            print("system:", _json.dumps(out["system"], ensure_ascii=False, default=str))
+        if "tools" in out:
+            print("tools:", _json.dumps(out["tools"], ensure_ascii=False, default=str))
+    print(f"tokens: {tin} -> {tout}  (-{round(100*(tin-tout)/tin,1) if tin else 0}%  profile={profile})",
+          file=sys.stderr)
+    print(f"stages: tools={stats.tools_minified} system={stats.system_minified} "
+          f"msgs={stats.messages_minified} dedup={stats.dedup_count} "
+          f"distill={stats.distill_count} budget_drop={stats.budget_dropped} "
+          f"tool_compressed={stats.tool_compressed}", file=sys.stderr)
+    return 0
+
+
+def cmd_presets(args):
+    """Print local-model presets by VRAM tier, optionally with measured reduction."""
+    from . import model_presets as mp
+    rows = (mp.preset_with_reduction(args.vram_gb) if args.measure
+            else mp.list_presets(args.vram_gb))
+    if not rows:
+        print("no presets match.", file=sys.stderr)
+        return 1
+    print(f"{'VRAM':>4}  {'model':38} {'quant':8} {'ctx':>7} {'profile':10} reduction")
+    for r in rows:
+        red = r.get("reduction_pct_bloated")
+        reds = f"{red:>5}%" if red is not None else "  n/a"
+        print(f"{r['vram_gb']:>4}GB {r['model'][:38]:38} {r['quant'][:8]:8} "
+              f"{r['context']:>7} {r['profile']:10} {reds}   {r['notes']}")
+    return 0
+
+
+def cmd_high_context(args):
+    """Print high-context VRAM-tier presets (dense + MoE) with the computed
+    nominal context that fits in VRAM and the effective raw-token capacity with
+    slimtoken compression. All numbers computed by config_optimizer + the pipeline."""
+    from . import context_presets as cp
+    rows = cp.list_context_presets(args.vram_gb)
+    if not rows:
+        print("no presets match.", file=sys.stderr)
+        return 1
+    print(f"{'tier':>4} {'kind':5} {'model':18} {'quant':7} {'nominal':>8} {'totalGB':>7} "
+          f"{'margin':>6} {'profile':10} {'red%':>5} {'effective':>10}  notes")
+    for r in rows:
+        print(f"{r['vram_gb']:>4}GB {r['kind']:5} {r['model'][:18]:18} {r['quant'][:7]:7} "
+              f"{r['nominal_ctx']:>8} {r['total_gb']:>7.2f} {r['margin_gb']:>+6.2f} "
+              f"{r['profile']:10} {r['reduction_pct']:>5.1f} {r['effective_ctx']:>10,}  "
+              f"{r['notes'][:38]}")
+    if args.detail:
+        print("\n# llama-server commands (replace the -m path with your .gguf):")
+        for r in rows:
+            print(f"# {r['vram_gb']}GB {r['kind']} {r['model']} ({r['quant']}, {r['kv_quant']} KV)")
+            print(r['llama_cmd'].replace("-m  ", "-m <model.gguf> ", 1))
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="slimtoken",
                                  description="token-optimization layer for LLM requests")
@@ -245,6 +328,27 @@ def main(argv=None):
     lt = sub.add_parser("latency", help="send one request through a running proxy and print t0-t4")
     lt.add_argument("--port", type=int, default=None)
     lt.set_defaults(func=cmd_latency)
+
+    o = sub.add_parser("optimize", help="minify a request JSON body (file or stdin) via a profile")
+    o.add_argument("--input", "-i", default=None, help="input JSON file (default: stdin)")
+    o.add_argument("--profile", "-p", default="balanced", choices=["safe", "balanced", "aggressive"])
+    o.add_argument("--format", "-f", default="anthropic",
+                   choices=["anthropic", "openai", "ollama"],
+                   help="request body format (anthropic /v1/messages, "
+                        "openai /v1/chat/completions, ollama /api/chat)")
+    o.add_argument("--max-input-tokens", type=int, default=None, help="override the profile token_budget")
+    o.add_argument("--json", action="store_true", help="emit the full minified body as one JSON object")
+    o.set_defaults(func=cmd_optimize)
+
+    pr = sub.add_parser("presets", help="list local-model presets by GPU VRAM tier")
+    pr.add_argument("--vram-gb", type=int, default=None, help="filter to one tier (4/8/16/24)")
+    pr.add_argument("--measure", action="store_true", help="run the pipeline to measure real reduction")
+    pr.set_defaults(func=cmd_presets)
+
+    hc = sub.add_parser("high-context", help="list high-context VRAM-tier presets (dense + MoE)")
+    hc.add_argument("--vram-gb", type=int, default=None, help="filter to one tier (4/8/16/24)")
+    hc.add_argument("--detail", action="store_true", help="also print the llama-server commands")
+    hc.set_defaults(func=cmd_high_context)
 
     args = ap.parse_args(argv)
     return args.func(args) or 0
