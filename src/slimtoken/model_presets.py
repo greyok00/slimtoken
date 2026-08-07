@@ -44,13 +44,6 @@ MODEL_PRESETS: List[Dict] = [
      "context": 131072, "profile": "balanced", "notes": "large native context; long-context workloads"},
     {"vram_gb": 16, "model": "Llama 3.1 8B", "quant": "Q4_K_M",
      "context": 131072, "profile": "balanced", "notes": "fast; lots of context headroom on 16GB"},
-
-    {"vram_gb": 24, "model": "Qwen 3 32B", "quant": "Q4_K_M",
-     "context": 131072, "profile": "balanced", "notes": "strong reasoning; fits comfortably on 24GB"},
-    {"vram_gb": 24, "model": "DeepSeek-V2 / V3 distill 16B", "quant": "Q4_K_M",
-     "context": 131072, "profile": "balanced", "notes": "coding-strong distill; plenty of headroom"},
-    {"vram_gb": 24, "model": "Llama 3.3 70B", "quant": "Q3_K_M",
-     "context": 32768, "profile": "balanced", "notes": "largest quality tier that fits at Q3 on 24GB"},
 ]
 
 
@@ -62,7 +55,7 @@ def list_presets(vram_gb: Optional[int] = None) -> List[Dict]:
 
 
 def presets_by_tier() -> Dict[int, List[Dict]]:
-    """Group presets by VRAM tier (4, 8, 16, 24)."""
+    """Group presets by VRAM tier (4, 8, 16)."""
     out: Dict[int, List[Dict]] = {}
     for r in MODEL_PRESETS:
         out.setdefault(r["vram_gb"], []).append(dict(r))

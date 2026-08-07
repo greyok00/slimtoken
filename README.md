@@ -169,9 +169,6 @@ not hand-waved (`slimtoken presets --measure`).
 | 16 GB | Qwen 3 14B | Q4_K_M | 65 536 | balanced | 83.7% |
 | 16 GB | Mistral Nemo 12B | Q4_K_M | 131 072 | balanced | 83.7% |
 | 16 GB | Llama 3.1 8B | Q4_K_M | 131 072 | balanced | 83.7% |
-| 24 GB | Qwen 3 32B | Q4_K_M | 131 072 | balanced | 83.7% |
-| 24 GB | DeepSeek-V2 / V3 distill 16B | Q4_K_M | 131 072 | balanced | 83.7% |
-| 24 GB | Llama 3.3 70B | Q3_K_M | 32 768 | balanced | 83.7% |
 
 > Reduction is **profile-dependent, not model-dependent** — the pipeline
 > rewrites the request regardless of which model consumes it. The table maps each
@@ -204,8 +201,6 @@ slimtoken high-context --vram-gb 16 --detail   # + the llama-server commands
 | 8 GB | dense | Llama 3.1 8B | Q4_K_M | 32 768 | 7.71 | +0.29 | ~201 k |
 | 16 GB | MoE | Qwen3.6-35B-A3B | IQ3_S | 131 072 | 14.16 | +1.84 | ~804 k |
 | 16 GB | dense | Llama 3.1 8B | Q4_K_M | 262 144 | 14.71 | +1.29 | ~1.6 M |
-| 24 GB | MoE | Qwen3.6-35B-A3B | IQ3_S | 262 144 | 14.78 | +9.22 | ~1.6 M |
-| 24 GB | dense | Qwen 3 14B | Q4_K_M | 262 144 | 21.01 | +2.99 | ~1.6 M |
 
 > The 16 GB MoE row is capped at **128 k** — the proven-stable value on a 16 GB
 > card (256 k OOMs at ub=2048; 128 k@ub512 measured 13.7 GB). The 8 GB MoE row is

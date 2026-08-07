@@ -707,12 +707,12 @@ def test_context_presets():
     from slimtoken import context_presets as cp
 
     rows = cp.list_context_presets()
-    check("presets cover all tiers", {r["vram_gb"] for r in rows} == {4, 8, 16, 24},
+    check("presets cover all tiers", {r["vram_gb"] for r in rows} == {4, 8, 16},
           f"{sorted({r['vram_gb'] for r in rows})}")
     check("every tier has dense + MoE",
           all(any(r["kind"] == "dense" for r in rows if r["vram_gb"] == t)
               and any(r["kind"] == "MoE" for r in rows if r["vram_gb"] == t)
-              for t in (4, 8, 16, 24)))
+              for t in (4, 8, 16)))
 
     for r in rows:
         tid = f"{r['vram_gb']}GB {r['kind']}"

@@ -74,14 +74,6 @@ _CONTEXT_MODELS = [
     {"vram_gb": 16, "kind": "dense", "model": "Llama 3.1 8B", "quant": "Q4_K_M",
      "size_gb": 4.9, "kv_per_token": KV_DENSE_8B, "profile": "balanced",
      "notes": "8B dense → 256k; the headline dense config"},
-
-    # ── 24 GB ──────────────────────────────────────────────────────────────
-    {"vram_gb": 24, "kind": "MoE", "model": "Qwen3.6-35B-A3B", "quant": "IQ3_S",
-     "size_gb": 11.4, "kv_per_token": KV_MOE, "profile": "balanced",
-     "notes": "same 35B-A3B IQ3_S with big headroom (Q4_K_M also fits for better quality)"},
-    {"vram_gb": 24, "kind": "dense", "model": "Qwen 3 14B", "quant": "Q4_K_M",
-     "size_gb": 9.0, "kv_per_token": KV_DENSE_14B, "profile": "balanced",
-     "notes": "14B dense → 256k"},
 ]
 
 
