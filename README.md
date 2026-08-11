@@ -379,6 +379,19 @@ tools/call), protocol version `2024-11-05`, and is self-contained (stdlib only o
 top of slimtoken's existing deps). It does no optimization itself — every call
 dispatches to the core pipeline.
 
+### Wiring into Claude Code, Codex, and OpenCode
+
+| Client | MCP registration | Skill install |
+|--------|------------------|---------------|
+| **Claude Code** | Add to `~/.mcp.json` (project scope) + `"enabledMcpjsonServers": ["slimtoken"]` in `~/.claude/settings.json` (user scope — pre-approves in every repo, no prompt) | `~/.claude/skills/slimtoken-optimizer/` |
+| **Codex** | `codex mcp add slimtoken -- ~/.local/bin/slimtoken-mcp` (writes `[mcp_servers.slimtoken]` to `~/.codex/config.toml`) | `~/.codex/skills/slimtoken-optimizer/` |
+| **OpenCode** | `"mcp": { "slimtoken": { "type": "local", "command": ["~/.local/bin/slimtoken-mcp"], "enabled": true } }` in `~/.config/opencode/opencode.jsonc` | `~/.config/opencode/skills/slimtoken-optimizer/` |
+
+Verify with `claude mcp list`, `codex mcp list`, or `opencode mcp list` — the
+server should show as **connected**. The skill directory is the same
+`skills/slimtoken-optimizer/` folder in every case; copy it into the client's
+skill search path (see [Agent Skill](#agent-skill)).
+
 ## Agent Skill
 
 > **Proxy-first.** The skill tells the agent that slimtoken runs as a proxy by
