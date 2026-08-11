@@ -559,14 +559,14 @@ def test_output_filter():
     """raw passthrough when unset; max_tokens truncates; stop truncates."""
     from slimtoken.output_filter import OutputFilter
 
-    # 1. raw passthrough when no levers set (feed == input)
-    f = OutputFilter(max_tokens=None, stops=[])
+    # 1. raw passthrough when all levers explicitly off (feed == input)
+    f = OutputFilter(max_tokens=None, stops=[], filler=False)
     out = f.feed(b"event: x\ndata: {\"delta\":{\"text\":\"hello\"}}\n\n")
-    check("raw passthrough unset levers", out == b"event: x\ndata: {\"delta\":{\"text\":\"hello\"}}\n\n")
+    check("raw passthrough all levers off", out == b"event: x\ndata: {\"delta\":{\"text\":\"hello\"}}\n\n")
 
     # 2. max_tokens truncation: cap at ~3 tokens, stream more
     # use a simple repeating word so tokens are countable
-    f = OutputFilter(max_tokens=3, stops=[])
+    f = OutputFilter(max_tokens=3, stops=[], filler=False)
     stream = b'event: m\ndata: {"type":"content_block_delta","delta":{"text":"apple banana cherry date elderberry"}}\n\n'
     out = f.feed(stream)
     # the filter should emit a truncated text and then close
@@ -580,7 +580,7 @@ def test_output_filter():
     check("max_tokens emitted prefix", "apple banana cherry date elderberry".startswith(emitted_text))
 
     # 3. stop-sequence truncation: stop string itself NOT emitted
-    f = OutputFilter(max_tokens=None, stops=["STOP"])
+    f = OutputFilter(max_tokens=None, stops=["STOP"], filler=False)
     stream = b'event: m\ndata: {"delta":{"text":"before text STOP after text"}}\n\n'
     out = f.feed(stream)
     check("stop filter produced output", len(out) > 0)
@@ -591,7 +591,7 @@ def test_output_filter():
     check("stop string not emitted", "STOP" not in emitted_text)
 
     # 4. non-data frames pass through
-    f = OutputFilter(max_tokens=2, stops=[])
+    f = OutputFilter(max_tokens=2, stops=[], filler=False)
     out = f.feed(b": ping\n\n")
     check("non-data frame passes through", out == b": ping\n\n")
 
@@ -631,13 +631,18 @@ def test_output_filter_filler():
     out = f.feed(frame("Sure!\nlong content here"))
     check("filler composes with max_tokens", b"long content" in out and b"Sure" not in out)
 
-    # 6. env wiring: SLIMTOKEN_FILLER=1 activates the filter
-    os.environ["SLIMTOKEN_FILLER"] = "1"
-    check("filler is_active", is_active())
-    ef = from_env()
-    check("filler from_env builds", ef is not None and ef.filler)
+    # 6. env wiring: filler is ON by default (no env needed)
     os.environ.pop("SLIMTOKEN_FILLER", None)
-    check("filler inactive when unset", not is_active())
+    check("filler active by default", is_active())
+    ef = from_env()
+    check("filler from_env builds on by default", ef is not None and ef.filler)
+
+    # 7. explicit disable: SLIMTOKEN_FILLER=0 turns it off
+    os.environ["SLIMTOKEN_FILLER"] = "0"
+    check("filler inactive when SLIMTOKEN_FILLER=0", not is_active())
+    ef = from_env()
+    check("filler from_env None when disabled", ef is None)
+    os.environ.pop("SLIMTOKEN_FILLER", None)
 
 
 def test_dom_stage():

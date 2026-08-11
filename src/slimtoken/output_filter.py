@@ -1,9 +1,12 @@
 """output_filter — enforce max_tokens / stop / filler-strip on the streamed response.
 
 Gated by ``SLIMTOKEN_MAX_TOKENS`` (integer), ``SLIMTOKEN_STOP`` (a comma-joined
-list of stop strings), and/or ``SLIMTOKEN_FILLER`` (bool). When ALL are unset,
-the filter is inert and the proxy streams raw bytes untouched (zero overhead).
-When any is set, the filter wraps the response stream and:
+list of stop strings), and ``SLIMTOKEN_FILLER`` (bool). **Filler-strip is ON by
+default** — it removes model-generated lead-in filler with no downside. Set
+``SLIMTOKEN_FILLER=0`` to disable. ``SLIMTOKEN_MAX_TOKENS`` / ``SLIMTOKEN_STOP``
+are opt-in (they need explicit values). When filler is off AND neither cap is
+set, the filter is inert and the proxy streams raw bytes untouched (zero
+overhead). When active, the filter wraps the response stream and:
 
   - ``max_tokens``: counts emitted text tokens incrementally with the bundled
     cl100k tokenizer, and closes the stream once the cap is reached (best-effort
@@ -47,7 +50,12 @@ _MAX_FILLER_LEN = max(len(p) for p in _FILLER_PATTERNS)
 
 
 def _env_filler() -> bool:
-    return os.environ.get("SLIMTOKEN_FILLER", "").strip().lower() in ("1", "true", "yes", "on")
+    # Default ON — lead-in filler is pure waste; strip it unless explicitly
+    # disabled. Set SLIMTOKEN_FILLER=0 to turn off.
+    v = os.environ.get("SLIMTOKEN_FILLER")
+    if v is None:
+        return True
+    return v.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _env_max_tokens() -> Optional[int]:
@@ -69,6 +77,8 @@ def _env_stops() -> List[str]:
 
 
 def is_active() -> bool:
+    # Filler is on by default, so the filter is active unless explicitly
+    # disabled (SLIMTOKEN_FILLER=0) AND no cap/stop is set.
     return bool(_env_max_tokens() or _env_stops() or _env_filler())
 
 
@@ -84,7 +94,7 @@ class OutputFilter:
     """
 
     def __init__(self, max_tokens: Optional[int] = None, stops: Optional[List[str]] = None,
-                 filler: bool = False):
+                 filler: bool = True):
         from .tokencount import get_encoder
         self.max_tokens = max_tokens
         self.stops = stops or []

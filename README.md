@@ -12,7 +12,8 @@ Fewer input tokens → faster prompt-eval, lower cost, more context headroom.
 MIT-licensed. Ships with `orjson`, `xxhash`, and `tiktoken` for fast JSON,
 hashing, and real token counting. The full pipeline runs **on by default**;
 disable any stage with a `SLIMTOKEN_*` env switch, or `SLIMTOKEN_MINIFY=0` for raw
-passthrough. Only **output filtering** (token cap / stop / filler) is opt-in.
+passthrough. **Filler-strip is on by default** (lead-in filler is pure waste);
+the output token cap and stop sequences are opt-in.
 
 ## Quick start
 
@@ -110,20 +111,23 @@ any LLM round-trip. The win is **fewer tokens sent**, not proxy speed.
 
 ## The output filter — capping, stopping, and de-filler-ing the response
 
-Three opt-in levers on the streamed response, all off by default (raw passthrough
-with zero overhead when unset). Enable any via env or `slimtoken serve` flags:
+Three levers on the streamed response. **Filler-strip is on by default** — it
+removes lead-in filler with no downside. The token cap and stop sequences are
+opt-in (they need explicit values). Set `SLIMTOKEN_FILLER=0` to disable the
+strip; with it off and no cap/stop set, the filter is inert (raw passthrough,
+zero overhead).
 
-| Lever | Env / flag | What it does |
-|-------|-----------|--------------|
-| ✂️ token cap | `SLIMTOKEN_MAX_TOKENS=N` / `--max-tokens N` | Truncate the stream at N output tokens, counted with the real tokenizer. |
-| 🛑 stop sequences | `SLIMTOKEN_STOP=a,b` / `--stop a,b` | Cut the stream at the first stop string (not emitted). |
-| 🧹 filler strip | `SLIMTOKEN_FILLER=1` | Drop lead-in filler ("Sure!", "Here is the code:", "Let me know if you need anything else.", …) from the response head. |
+| Lever | Env / flag | Default | What it does |
+|-------|-----------|:-------:|--------------|
+| 🧹 filler strip | `SLIMTOKEN_FILLER` | **1** | Drop lead-in filler ("Sure!", "Here is the code:", "Let me know if you need anything else.", …) from the response head. `=0` to disable. |
+| ✂️ token cap | `SLIMTOKEN_MAX_TOKENS=N` / `--max-tokens N` | off | Truncate the stream at N output tokens, counted with the real tokenizer. |
+| 🛑 stop sequences | `SLIMTOKEN_STOP=a,b` / `--stop a,b` | off | Cut the stream at the first stop string (not emitted). |
 
 ```bash
 slimtoken serve --upstream http://127.0.0.1:8082 \
   --max-tokens 2048 --stop "END" --tool-compress
-# or via env:
-SLIMTOKEN_MAX_TOKENS=2048 SLIMTOKEN_STOP=END SLIMTOKEN_FILLER=1 slimtoken serve --upstream http://127.0.0.1:8082
+# or via env (filler needs no flag — it's on):
+SLIMTOKEN_MAX_TOKENS=2048 SLIMTOKEN_STOP=END slimtoken serve --upstream http://127.0.0.1:8082
 ```
 
 The filler strip is a pending-buffer state machine — a phrase split across SSE
@@ -351,7 +355,7 @@ Defaults are the recommended values. Set any to `0` to disable.
 | `SLIMTOKEN_MINIFY_DOM` | 0 | lossy opt-in: prune large HTML tool_results |
 | `SLIMTOKEN_MAX_TOKENS` | _(unset)_ | output-token cap (enables output filter) |
 | `SLIMTOKEN_STOP` | _(unset)_ | comma-joined stop sequences (enables output filter) |
-| `SLIMTOKEN_FILLER` | 0 | strip lead-in filler ("Sure!", "Here is the code:") from the response head |
+| `SLIMTOKEN_FILLER` | 1 | strip lead-in filler ("Sure!", "Here is the code:") from the response head; 0 = off |
 | `SLIMTOKEN_STATS_FILE` | _(unset)_ | path to persist cumulative minify stats (runs, tokens in/out, saved %, 60-run history) as JSON |
 | `SLIMTOKEN_HTTP2` | 0 | use HTTP/2 to the upstream |
 | `SLIMTOKEN_PORT` | 8181 | listen port |

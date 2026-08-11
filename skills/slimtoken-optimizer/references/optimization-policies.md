@@ -67,9 +67,10 @@ config but `enforce_budget` is a no-op when the budget is 0.
 - `SLIMTOKEN_TOOL_COMPRESS=0` → turn off lossy tool-result compression.
 - `SLIMTOKEN_MINIFY_DOM=1` → turn on the lossy DOM stage (prune large HTML
   tool_results).
-- `SLIMTOKEN_MAX_TOKENS=N` / `SLIMTOKEN_STOP=...` / `SLIMTOKEN_FILLER=1` →
-  output-side filtering on the proxy (cap/truncate streamed completions, strip
-  lead-in filler like "Sure!" / "Here is the code:"). Off when unset.
+- `SLIMTOKEN_MAX_TOKENS=N` / `SLIMTOKEN_STOP=...` → output-side filtering on the
+  proxy (cap/truncate streamed completions). Off when unset.
+- `SLIMTOKEN_FILLER=0` → turn OFF the lead-in filler strip (it's **on by
+  default**; strips "Sure!" / "Here is the code:" from the response head).
 - `SLIMTOKEN_STATS_FILE=/path.json` → persist cumulative minify stats (runs,
   tokens in/out, saved %, 60-run history) atomically after each request.
 

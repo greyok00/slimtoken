@@ -56,9 +56,9 @@ is a raw `SLIMTOKEN_*` env switch; there is no `--profile` flag.
   verbatim) or `SLIMTOKEN_TOOL_COMPRESS=0` (keep tool results verbatim).
 - Turn on the opt-in DOM stage: `SLIMTOKEN_MINIFY_DOM=1` (prune large HTML
   tool_results).
-- Output side: `SLIMTOKEN_FILLER=1` strips lead-in filler ("Sure!",
-  "Here is the code:") from the streamed response head; `SLIMTOKEN_STATS_FILE`
-  persists cumulative minify stats.
+- Output side: `SLIMTOKEN_FILLER` strips lead-in filler ("Sure!",
+  "Here is the code:") from the streamed response head — **on by default**,
+  `=0` to disable; `SLIMTOKEN_STATS_FILE` persists cumulative minify stats.
 
 All stages are **pair-safe**: tool_use/tool_result pairs are never split or
 reordered, and code fences are preserved.
