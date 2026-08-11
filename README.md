@@ -2,59 +2,46 @@
 
 🔀 A token-optimization layer that sits between an Anthropic-compatible client and
 its backend — a local llama-server or a cloud API — and rewrites every request to
-use **fewer tokens** before forwarding it.
+use **fewer tokens** before forwarding it. Tool schemas are trimmed, the system
+prompt is compressed, old turns are distilled, repeated tool results are
+collapsed, and tool output is type-compressed. On the way back, it can cap output
+tokens, truncate at stop sequences, and strip lead-in filler.
 
-Tool schemas are trimmed, the system prompt is compressed, old turns are
-distilled, repeated tool results are collapsed, and tool output is
-type-compressed. Fewer input tokens → faster prompt-eval, lower cost, more
-context headroom. It also ships a backend optimizer that recommends
-llama-server arguments tuned to your GPU.
-
-You can use slimtoken three ways — **all driven by the same core pipeline, none
-reimplemented**:
-
-| Way | How | Best for |
-|-----|-----|----------|
-| 🔀 **Proxy** | Point `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` / `OLLAMA_HOST` at `slimtoken serve` | Transparent, always-on — works with any Anthropic, OpenAI, or Ollama client that honors those env vars (Claude Code, curl, SDKs) |
-| 🛠️ **MCP server** | `slimtoken-mcp` over stdio | Hosts that speak MCP (Claude Desktop, ADK, Cursor, Gemini CLI) — call pipeline functions as tools |
-| 📦 **Agent Skill + CLI** | `slimtoken optimize` / `slimtoken presets` / `slimtoken high-context` | On-demand minification + VRAM configs from a script or a skill-loaded agent |
+Fewer input tokens → faster prompt-eval, lower cost, more context headroom.
 
 MIT-licensed. Ships with `orjson`, `xxhash`, and `tiktoken` for fast JSON,
-hashing, and real token counting. The full pipeline runs **on by default** —
-tools, system, messages, dedup, distill, and lossy tool-result compression.
-Disable any stage with a `SLIMTOKEN_*` env switch; `SLIMTOKEN_MINIFY=0` for raw
-passthrough. Only **output filtering** (token cap / stop sequences) is opt-in.
+hashing, and real token counting. The full pipeline runs **on by default**;
+disable any stage with a `SLIMTOKEN_*` env switch, or `SLIMTOKEN_MINIFY=0` for raw
+passthrough. Only **output filtering** (token cap / stop / filler) is opt-in.
 
-## Install
+## Quick start
 
 ```bash
 pip install slimtoken
 
-# Proxy: wire ANTHROPIC_BASE_URL at the proxy, then run it
+# 1. Point your client at the proxy (one command, reversible)
 slimtoken install
 slimtoken serve --upstream http://127.0.0.1:8082        # local llama-server
-slimtoken serve --upstream https://api.anthropic.com   # or cloud
+# or:  slimtoken serve --upstream https://api.anthropic.com   # cloud
 
-# CLI: minify a request body on demand
-slimtoken optimize -i request.json                     # minify a request body
-slimtoken presets --measure                            # local-model table + measured reduction
+# 2. Or minify a request body on demand (no server needed)
+slimtoken optimize -i request.json                      # minify a request body
+slimtoken optimize -i request.json --max-input-tokens 8192   # + hard budget
 
-# MCP server: stdio JSON-RPC for MCP clients
-slimtoken-mcp                                          # or: python -m slimtoken.mcp_server
+# 3. Or expose the pipeline as MCP tools
+slimtoken-mcp                                          # stdio JSON-RPC
 ```
-
-Uninstall the proxy wiring: `slimtoken uninstall` (or `bash scripts/uninstall.sh`).
 
 `slimtoken install` only writes a marker block to your shell rc that exports
 `ANTHROPIC_BASE_URL` (prior value backed up to `~/.slimtoken/prev_env` and restored
 on uninstall). It never touches `settings.json`, `CLAUDE.md`, or `mcp.json`, so
-removal is clean and fully reversible.
+removal is clean and fully reversible: `slimtoken uninstall`.
 
-## How it works — the proxy optimization stack
+## What you get — the pipeline
 
-A six-stage minify pipeline runs on each request, all on by default. The diagram
-shows the request lifecycle with the `t0–t4` latency boundaries the proxy records
-per request — **proxy-side work** (ingress + optimize) is what slimtoken controls;
+A minify pipeline runs on each request, all on by default. The diagram shows the
+request lifecycle with the `t0–t4` latency boundaries the proxy records per
+request — **proxy-side work** (ingress + optimize) is what slimtoken controls;
 **model-side** (forward → first token → final token) is where real time goes.
 
 ```mermaid
@@ -71,47 +58,108 @@ sequenceDiagram
     Note over P: proxy-side = (t1-t0)+(t2-t1) ≈ 12 ms<br/>model-side = (t3-t2)+(t4-t3) — dominates
 ```
 
-| Stage | What it does |
-|-------|--------------|
-| 🧰 tools | Drop `$comment` / `title` / `examples` from schemas; keep `name`, `required`, `enum`, `type`, structure. Compress each `description` to its first fenced example. |
-| 📋 system | Collapse whitespace and duplicate banner lines outside code fences; preserve `<tag>` markers and fenced code byte-for-byte. |
-| 💬 messages | Collapse blank-line runs and trailing whitespace in text blocks; pass `tool_use` / `tool_result` / `image` blocks untouched. |
-| 🔄 dedup | Collapse repeated `tool_result` contents; latest kept verbatim, older copies stubbed. |
-| 📝 distill | Truncate old assistant prose beyond the last `SLIMTOKEN_KEEP_LAST` (4) turns to 160 chars/turn. Fence-aware, preserves tool blocks, no model call. |
-| 🎯 budget | Hard token cap (`SLIMTOKEN_MINIFY_BUDGET`, 131072); drops a leading prefix pair-safely — only when over budget. |
-| 🌐 dom *(opt-in)* | `SLIMTOKEN_MINIFY_DOM=1` — prune large HTML `tool_result` payloads (strip script/style/svg, nav/footer/sidebar, `class`/`id`/`data-*`/`aria-*` attrs, collapse to text). Session-aware LRU cache. |
+| Stage | What it does | Lossy? |
+|-------|--------------|:------:|
+| 🧰 tools | Drop `$comment` / `title` / `examples` from schemas; keep `name`, `required`, `enum`, `type`, structure. Compress each `description` to its first fenced example. | no |
+| 📋 system | Collapse whitespace and duplicate banner lines outside code fences; preserve `<tag>` markers and fenced code byte-for-byte. | no |
+| 💬 messages | Collapse blank-line runs and trailing whitespace in text blocks; pass `tool_use` / `tool_result` / `image` blocks untouched. | no |
+| 🔄 dedup | Collapse repeated `tool_result` contents; latest kept verbatim, older copies stubbed. | no* |
+| 📝 distill | Truncate old assistant prose beyond the last `SLIMTOKEN_KEEP_LAST` (4) turns to 160 chars/turn. Fence-aware, preserves tool blocks, no model call. | old turns only |
+| 🎯 budget | Hard token cap (`SLIMTOKEN_MINIFY_BUDGET`, 131072); drops a leading prefix pair-safely — only when over budget. | drops oldest |
+| 🌐 dom *(opt-in)* | `SLIMTOKEN_MINIFY_DOM=1` — prune large HTML `tool_result` payloads (strip script/style/svg, nav/footer/sidebar, `class`/`id`/`data-*`/`aria-*` attrs, collapse to text). Session-aware LRU cache. | yes |
+| 🗜️ tool_compress | Type-specific reduction of large `tool_result` content (directory listings, git output, logs, JSON, source) + a `[slimtoken-compressed]` header. | yes |
 
-**Safety guarantees** — code fences (``` / ~~~) preserved byte-identical; pruning
-is pair-safe (a `tool_result` is never orphaned from its `tool_use`); identity-based
-change detection returns unchanged content zero-copy; the `grammar` field is
-stripped from request bodies.
+\* dedup is lossless in practice — the latest copy is always kept verbatim; only
+stale duplicates are stubbed.
 
-## Input optimization (total)
+**Safety guarantees** — fenced code blocks (triple-backtick / `~~~`) preserved
+byte-identical; pruning is pair-safe (a `tool_result` is never orphaned from its
+`tool_use`); identity-based change detection returns unchanged content zero-copy;
+the `grammar` field is stripped from request bodies.
 
-Total input-token reduction, the always-on config (full pipeline), **measured
-by the pipeline itself** on representative payloads — not asserted:
+## Practical example — what it actually does
 
-| Scenario | reduction |
-|----------|----------:|
-| Typical session (~500 tok) | 9.0% |
-| Bloated session (repeated file reads + verbose history, ~30k tok) | 85.4% |
-| End-to-end vs a live llama-server (model-reported) | **11.7%** (1,164 → 1,028 tok) |
-
-Run the measurement yourself:
+A realistic bloated session (6 repeated file reads + verbose history, 18 KB body):
 
 ```bash
-slimtoken presets --measure                    # recompute the table above on your machine
-python3 bench/benchmark.py                     # payload + latency breakdown
-python3 bench/benchmark.py --backend http://127.0.0.1:8082   # + end-to-end vs a live backend
-slimtoken latency                             # one request → t0-t4 printout
+$ slimtoken optimize -i request.json
+tokens: 4678 -> 1259  (-73.1%)
+stages: tools=0 system=True msgs=6 dedup=5 distill=4 budget_drop=0 tool_compressed=1
+```
+
+What each stage did to that body:
+
+| Stage | Effect on the example |
+|-------|----------------------|
+| 🔄 dedup | 5 of 6 identical file reads → `[slimtoken: identical to a later tool_result; omitted 2010 chars]` — the latest copy stays verbatim |
+| 📝 distill | 4 verbose assistant turns → first sentence + `[slimtoken: distilled from 539 chars]` |
+| 🗜️ tool_compress | the last file read → `[slimtoken-compressed] 2010B -> 1477B; source: …` (comments/blank lines dropped) |
+| 📋 system | 20 repeated banner lines → 1 |
+
+The model still sees every file's content (in the latest result) and every turn's
+gist — just not the redundant copies. Measure your own payload:
+
+```bash
+slimtoken optimize -i request.json --json     # full minified body, machine-readable
+slimtoken presets --measure                   # recompute the reduction table on your machine
+slimtoken latency                             # one request through a running proxy → t0-t4 printout
 ```
 
 Proxy latency is ~12 ms per request (optimize stage, warm) — negligible next to
-any LLM round-trip. The win is **fewer tokens sent**, not proxy speed. The
-`t0–t4` instrumentation separates slimtoken's work from model generation so you
-can see exactly that.
+any LLM round-trip. The win is **fewer tokens sent**, not proxy speed.
 
-### One config, no profiles
+## The output filter — capping, stopping, and de-filler-ing the response
+
+Three opt-in levers on the streamed response, all off by default (raw passthrough
+with zero overhead when unset). Enable any via env or `slimtoken serve` flags:
+
+| Lever | Env / flag | What it does |
+|-------|-----------|--------------|
+| ✂️ token cap | `SLIMTOKEN_MAX_TOKENS=N` / `--max-tokens N` | Truncate the stream at N output tokens, counted with the real tokenizer. |
+| 🛑 stop sequences | `SLIMTOKEN_STOP=a,b` / `--stop a,b` | Cut the stream at the first stop string (not emitted). |
+| 🧹 filler strip | `SLIMTOKEN_FILLER=1` | Drop lead-in filler ("Sure!", "Here is the code:", "Let me know if you need anything else.", …) from the response head. |
+
+```bash
+slimtoken serve --upstream http://127.0.0.1:8082 \
+  --max-tokens 2048 --stop "END" --tool-compress
+# or via env:
+SLIMTOKEN_MAX_TOKENS=2048 SLIMTOKEN_STOP=END SLIMTOKEN_FILLER=1 slimtoken serve --upstream http://127.0.0.1:8082
+```
+
+The filler strip is a pending-buffer state machine — a phrase split across SSE
+chunks is still caught:
+
+```
+model emits:  "Sure!\nHere is the code:\nprint(1)"
+client sees:  "print(1)"
+```
+
+The token cap and stop truncation are applied to the streamed delta text, so a
+runaway completion is cut off at the source instead of flooding your context.
+
+## Stats — see what you're saving
+
+Set `SLIMTOKEN_STATS_FILE=/path/to/stats.json` and the proxy atomically persists
+cumulative minify stats after every request (tmp + rename, so a crash never
+corrupts the file):
+
+```json
+{
+  "runs": 2,
+  "tokens_in": 3000,
+  "tokens_out": 700,
+  "tokens_saved": 2300,
+  "ratio_pct": 76.7,
+  "last_run_ts": "2026-08-11T09:30:00",
+  "last_saved_pct": 80.0,
+  "history_60s": [{"ts": "...", "saved_pct": 80.0}, {"ts": "...", "saved_pct": 73.1}]
+}
+```
+
+`GET /metrics` on the proxy returns cumulative token counts + the `t0–t4` latency
+buckets.
+
+## One config, no profiles
 
 There are no named profiles. slimtoken always runs the full pipeline (the old
 `aggressive` preset, minus the name); every stage and knob is a raw `SLIMTOKEN_*`
@@ -282,16 +330,6 @@ Drop the `skills/slimtoken-optimizer/` directory into your agent's skill search
 path and the host runtime surfaces it when a prompt matches "shrink / minimize /
 trim tokens / context too long".
 
-## Lossy stages
-
-Two stages discard information. **Tool-result compression is on by default**
-(part of the always-on pipeline); **output filtering is opt-in**.
-
-| Stage | Env | Default | What it does |
-|-------|-----|:-------:|--------------|
-| 🗜️ tool compression | `SLIMTOKEN_TOOL_COMPRESS` | **1** | Replace large `tool_result` content with a compact, type-detected representation (directory listings, git output, logs, JSON, source) + a `[slimtoken-compressed] N B -> M B` metadata header. Pair-safe — only the `content` field changes. Set `0` to disable. |
-| ✂️ output filter | `SLIMTOKEN_MAX_TOKENS=N` / `SLIMTOKEN_STOP=a,b` / `SLIMTOKEN_FILLER=1` | off | Enforce a max output-token cap (counted with the real tokenizer), stop-sequence truncation, and/or lead-in filler stripping ("Sure!", "Here is the code:", …) on the streamed response. Raw passthrough with zero overhead when unset. |
-
 ## Config
 
 Defaults are the recommended values. Set any to `0` to disable.
@@ -319,7 +357,6 @@ Defaults are the recommended values. Set any to `0` to disable.
 | `SLIMTOKEN_PORT` | 8181 | listen port |
 | `SLIMTOKEN_UPSTREAM` | _(required to serve)_ | backend URL |
 
-`GET /metrics` returns cumulative token counts + the `t0–t4` latency buckets.
 TLS for cloud HTTPS upstreams is handled by `httpx` (SNI; optional mTLS via
 `SLIMTOKEN_TLS_*`; `SLIMTOKEN_TLS_INSECURE=1` to skip verify). Lazy MCP — one
 stub tool per configured MCP server in `~/.slimtoken/lazy_mcp.json`, the real
@@ -375,15 +412,15 @@ safe values for your specific VRAM automatically.
 ## Tests
 
 ```bash
-python3 tests/test_all.py          # 161 checks — core pipeline + proxy + adapters + context presets
-python3 tests/test_mcp_server.py   # 60 checks — MCP stdio server (all 8 tools)
+python3 -m pytest tests/ -q          # 32 checks — core pipeline + proxy + adapters + context presets
 ```
 
 Cover fence byte-identity, pair-safety, dedup, distill, ≥50% default reduction
 on a bloated payload, real-tokenizer counting (no whole-body serialize),
-single-pass equivalence, type-compressor pair-safety, output-filter truncation,
-async proxy end-to-end, `/metrics` latency buckets, fast-path byte-identical
-passthrough, and the full MCP stdio handshake + every tool + the error paths.
+single-pass equivalence, type-compressor pair-safety, output-filter truncation +
+filler-strip, DOM pruning, stats persistence, async proxy end-to-end, `/metrics`
+latency buckets, fast-path byte-identical passthrough, and the full MCP stdio
+handshake + every tool + the error paths.
 
 ## License
 
