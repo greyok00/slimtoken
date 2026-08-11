@@ -24,10 +24,10 @@ import sys
 from typing import Any, Dict, Optional
 
 from . import tools
+from slimtoken import __version__ as SERVER_VERSION
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "slimtoken-mcp"
-SERVER_VERSION = "0.3.3"
 
 
 def _send(obj: Dict[str, Any]) -> None:

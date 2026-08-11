@@ -19,7 +19,13 @@ the model.
 
 ## How to use
 
-**Primary — CLI** (no server needed, works offline):
+**Default — the proxy.** slimtoken runs as a proxy in front of the model API
+(`slimtoken serve --upstream <model>`). Every request routed through it is
+minified automatically — **you don't need to call anything**. If the proxy is in
+the path, the work is already done. Do not re-minify a request that already went
+through the proxy.
+
+**Fallback 1 — CLI** (when the proxy isn't in the path; no server needed):
 
 ```bash
 # Count tokens in a request (cl100k, approximate for non-cl100k models)
@@ -32,7 +38,7 @@ slimtoken presets --measure            # 4 / 8 / 16 GB tiers, real % drop
 slimtoken presets --vram-gb 8 --measure
 ```
 
-**Fallback — MCP stdio** (when the host agent runtime speaks MCP and you want a
+**Fallback 2 — MCP stdio** (when the host agent runtime speaks MCP and you want a
 persistent tool surface):
 
 ```

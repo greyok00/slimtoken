@@ -60,26 +60,50 @@ Input reduction + output reduction together, on the same session:
 
 ## Quick start
 
+**The proxy is the default.** It sits in front of your model API and minifies
+**every** request automatically — the agent can't skip it, so you get the savings
+without relying on the model to remember to call anything.
+
 ```bash
 pip install slimtoken
 
-# 1. Point your client at the proxy (one command, reversible)
+# Default setup — the proxy (one command, reversible)
 slimtoken install
 slimtoken serve --upstream http://127.0.0.1:8082        # local llama-server
 # or:  slimtoken serve --upstream https://api.anthropic.com   # cloud
 
-# 2. Or minify a request body on demand (no server needed)
-slimtoken optimize -i request.json                      # minify a request body
-slimtoken optimize -i request.json --max-input-tokens 8192   # + hard budget
+# `slimtoken install` already wired ANTHROPIC_BASE_URL to the proxy.
+# Point your client at it and every request is minified automatically.
+# Nothing else to do.
 
-# 3. Or expose the pipeline as MCP tools
-slimtoken-mcp                                          # stdio JSON-RPC
+# Alternatives (not the default — on-demand only):
+#   CLI:    slimtoken optimize -i request.json
+#   MCP:    slimtoken-mcp
 ```
 
-`slimtoken install` only writes a marker block to your shell rc that exports
-`ANTHROPIC_BASE_URL` (prior value backed up to `~/.slimtoken/prev_env` and restored
-on uninstall). It never touches `settings.json`, `CLAUDE.md`, or `mcp.json`, so
-removal is clean and fully reversible: `slimtoken uninstall`.
+`slimtoken install` writes a marker block to your shell rc that exports
+`ANTHROPIC_BASE_URL` to the proxy (prior value backed up to `~/.slimtoken/prev_env`
+and restored on uninstall). It never touches `settings.json`, `CLAUDE.md`, or
+`mcp.json`, so removal is clean and fully reversible: `slimtoken uninstall`.
+
+### Why the proxy is the default
+
+The proxy is the only surface that guarantees **every** request is minified. MCP
+tools and the CLI are on-demand — the agent has to choose to call them, and a
+busy agent will forget. The proxy rewrites the request at the API layer, so the
+savings happen whether or not the agent "remembers" slimtoken. If you want the
+token reduction to actually happen, route through the proxy.
+
+### Disabling the proxy
+
+Some setups don't want automatic minification (exact-fidelity debugging, or a
+model that must see raw tool output verbatim). Opt out cleanly:
+
+- **Per-request passthrough:** `SLIMTOKEN_MINIFY=0` — raw passthrough, no rewrite.
+- **Don't route through it:** unset `ANTHROPIC_BASE_URL` (or point it at your
+  model directly) — the proxy only sees traffic that's sent to it.
+- **Full removal:** `slimtoken uninstall` — restores your prior
+  `ANTHROPIC_BASE_URL` and removes the marker block.
 
 ## What it does — the pipeline
 
@@ -311,6 +335,12 @@ slimtoken high-context --vram-gb 16 --detail   # + the llama-server commands
 
 ## MCP server
 
+> **On-demand, not the default.** The MCP server gives the agent tools it can
+> call when it chooses. It does **not** minify every request — that's the
+> proxy's job. Use the MCP server when you want the agent to minify on demand
+> (or as a redundancy check that the proxy path is working). For guaranteed
+> every-message minification, use the proxy (see [Quick start](#quick-start)).
+
 `slimtoken-mcp` exposes the pipeline as MCP tools over **stdio** (the transport
 every local MCP client uses). It is a thin adapter: every tool imports and calls
 an existing core function — **no optimization is reimplemented**. The proxy and
@@ -350,6 +380,11 @@ top of slimtoken's existing deps). It does no optimization itself — every call
 dispatches to the core pipeline.
 
 ## Agent Skill
+
+> **Proxy-first.** The skill tells the agent that slimtoken runs as a proxy by
+> default and every request is minified automatically — so the agent doesn't
+> need to call anything. The CLI/MCP tools in the skill are the fallback for
+> when the proxy isn't in the path (on-demand minification).
 
 The `skills/slimtoken-optimizer/` directory is a packaged **Agent Skill** (static
 files a host agent runtime — Claude Code, ADK, Gemini CLI, Cursor — reads from

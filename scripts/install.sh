@@ -8,5 +8,8 @@ pip install "$HERE" >/dev/null
 slimtoken install "$@"
 echo
 echo "Done. slimtoken is installed."
-echo "Start the proxy with:  slimtoken serve"
-echo "  (local: --upstream http://127.0.0.1:8080 | cloud: --upstream https://api.anthropic.com)"
+echo "The proxy is the default — start it and every request is minified:"
+echo "  slimtoken serve --upstream http://127.0.0.1:8080        # local llama-server"
+echo "  slimtoken serve --upstream https://api.anthropic.com  # cloud"
+echo "ANTHROPIC_BASE_URL is already wired to the proxy (see ~/.slimtoken/prev_env)."
+echo "Disable anytime: SLIMTOKEN_MINIFY=0, or 'slimtoken uninstall'."
