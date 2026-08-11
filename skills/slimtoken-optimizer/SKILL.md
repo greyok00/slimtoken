@@ -1,6 +1,6 @@
 ---
 name: slimtoken-optimizer
-description: Shrink LLM prompts before sending them — collapse duplicate tool results, distill old turns, minify tool schemas and system prompts, and prune to a token budget. Lossy by default (distill + tool-result compression) for the most context headroom; disable any stage via the SLIMTOKEN_* env knobs. Works with any local or cloud model via the slimtoken CLI or MCP server.
+description: Shrink LLM prompts before sending them — collapse duplicate tool results, distill old turns, minify tool schemas and system prompts, prune to a token budget, and (opt-in) prune large HTML tool results. On the output side, the proxy can cap/truncate streamed completions and strip lead-in filler. Lossy by default (distill + tool-result compression) for the most context headroom; disable any stage via the SLIMTOKEN_* env knobs. Works with any local or cloud model via the slimtoken CLI or MCP server.
 ---
 
 # slimtoken-optimizer
@@ -54,6 +54,11 @@ is a raw `SLIMTOKEN_*` env switch; there is no `--profile` flag.
 - Turn the whole thing off: `SLIMTOKEN_MINIFY=0` (raw passthrough).
 - Turn off one lossy stage: e.g. `SLIMTOKEN_MINIFY_DISTILL=0` (keep old turns
   verbatim) or `SLIMTOKEN_TOOL_COMPRESS=0` (keep tool results verbatim).
+- Turn on the opt-in DOM stage: `SLIMTOKEN_MINIFY_DOM=1` (prune large HTML
+  tool_results).
+- Output side: `SLIMTOKEN_FILLER=1` strips lead-in filler ("Sure!",
+  "Here is the code:") from the streamed response head; `SLIMTOKEN_STATS_FILE`
+  persists cumulative minify stats.
 
 All stages are **pair-safe**: tool_use/tool_result pairs are never split or
 reordered, and code fences are preserved.

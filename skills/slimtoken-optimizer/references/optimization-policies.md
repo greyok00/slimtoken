@@ -25,14 +25,18 @@ separated or reordered, so tool-call validity is preserved end-to-end.
   are replaced with a short distilled summary (≤ `distill_max_chars`, 160 by
   default). The most recent `keep_last` turns are always kept verbatim.
   **Lossy for old turns only** — recent context is untouched.
-6. **tool_compress** (on by default; disable via `SLIMTOKEN_TOOL_COMPRESS=0`) —
-  type-specific reduction of large tool_result content: directory listings, git
-  output, logs, JSON, source. Emits a compact representation plus a
-  `[slimtoken-compressed]` metadata header. **Lossy.**
+6. **dom** *(opt-in; enable via `SLIMTOKEN_MINIFY_DOM=1`)* — prune large HTML
+   `tool_result` payloads. Strips script/style/svg, low-value sections
+   (nav/footer/sidebar), `class`/`id`/`data-*`/`aria-*` attributes, and
+   collapses to text. Session-aware LRU cache; 8 KB truncation guard. **Lossy.**
 7. **budget** — prune to a token budget. When set (`token_budget` /
   `--max-input-tokens`), drops leading messages pair-safely (never breaking a
   tool_use/result pair) until under budget. Uses a real cl100k token count and
   incremental prefix sums (O(1) per candidate — no re-serialization).
+8. **tool_compress** (on by default; disable via `SLIMTOKEN_TOOL_COMPRESS=0`) —
+  type-specific reduction of large tool_result content: directory listings, git
+  output, logs, JSON, source. Emits a compact representation plus a
+  `[slimtoken-compressed]` metadata header. **Lossy.**
 
 ## The always-on config (no profiles)
 
@@ -49,6 +53,7 @@ Defaults:
 | distill_max_chars | `SLIMTOKEN_DISTILL_MAX_CHARS` | 160 | max chars per distilled old turn |
 | dedup_min_chars | `SLIMTOKEN_DEDUP_MIN_CHARS` | 200 | only dedup tool results ≥ this long |
 | tool_compress | `SLIMTOKEN_TOOL_COMPRESS` | 1 | lossy tool-result compression |
+| minify_dom | `SLIMTOKEN_MINIFY_DOM` | 0 | lossy opt-in: prune large HTML tool_results |
 
 `token_budget=0` means budget pruning is off; the field is still present in the
 config but `enforce_budget` is a no-op when the budget is 0.
@@ -60,8 +65,13 @@ config but `enforce_budget` is a no-op when the budget is 0.
 - `SLIMTOKEN_MINIFY_TOOL_SKIP=Read,LS` → skip named tools (case-insensitive,
   prefix match) so critical tools are never minified.
 - `SLIMTOKEN_TOOL_COMPRESS=0` → turn off lossy tool-result compression.
-- `SLIMTOKEN_MAX_TOKENS=N` / `SLIMTOKEN_STOP=...` → output-side filtering on the
-  proxy (cap/truncate streamed completions). Off when unset.
+- `SLIMTOKEN_MINIFY_DOM=1` → turn on the lossy DOM stage (prune large HTML
+  tool_results).
+- `SLIMTOKEN_MAX_TOKENS=N` / `SLIMTOKEN_STOP=...` / `SLIMTOKEN_FILLER=1` →
+  output-side filtering on the proxy (cap/truncate streamed completions, strip
+  lead-in filler like "Sure!" / "Here is the code:"). Off when unset.
+- `SLIMTOKEN_STATS_FILE=/path.json` → persist cumulative minify stats (runs,
+  tokens in/out, saved %, 60-run history) atomically after each request.
 
 ## Token counting
 Counts use the real **cl100k_base** tokenizer (bundled with slimtoken, runs
