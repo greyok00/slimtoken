@@ -79,6 +79,48 @@ def _metrics_json() -> str:
     return json.dumps(m, indent=2)
 
 
+# ── minify stats persistence (SLIMTOKEN_STATS_FILE) ─────────────────────────
+# Optional: when SLIMTOKEN_STATS_FILE is set, cumulative minify stats are
+# written to that JSON file after each optimized request (atomic tmp+rename).
+# Backported from CortexAgent's grammar_proxy._record_minify().
+_MINIFY_STATS_FILE = os.environ.get("SLIMTOKEN_STATS_FILE") or None
+_minify_stats = {
+    "runs": 0, "tokens_in": 0, "tokens_out": 0, "tokens_saved": 0,
+    "ratio_pct": 0.0, "last_run_ts": "", "last_saved_pct": 0.0,
+    "history_60s": [],
+}
+_MINIFY_HIST_CAP = 60
+
+
+def _record_minify(stats) -> None:
+    if not _MINIFY_STATS_FILE:
+        return
+    try:
+        tin = getattr(stats, "tokens_in", 0) or 0
+        tout = getattr(stats, "tokens_out", 0) or 0
+        saved = max(0, tin - tout)
+        saved_pct = round(saved / tin * 100, 1) if tin else 0.0
+        _minify_stats["runs"] += 1
+        _minify_stats["tokens_in"] += tin
+        _minify_stats["tokens_out"] += tout
+        _minify_stats["tokens_saved"] += saved
+        if _minify_stats["tokens_in"] > 0:
+            _minify_stats["ratio_pct"] = round(
+                _minify_stats["tokens_saved"] / _minify_stats["tokens_in"] * 100, 1)
+        _minify_stats["last_run_ts"] = datetime.now().isoformat()
+        _minify_stats["last_saved_pct"] = saved_pct
+        hist = _minify_stats["history_60s"]
+        hist.append({"ts": _minify_stats["last_run_ts"], "saved_pct": saved_pct})
+        if len(hist) > _MINIFY_HIST_CAP:
+            del hist[:-_MINIFY_HIST_CAP]
+        tmp = _MINIFY_STATS_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(_minify_stats, f, default=str)
+        os.replace(tmp, _MINIFY_STATS_FILE)
+    except Exception:
+        pass
+
+
 # ── minify config from env ────────────────────────────────────────────────────
 # The single config builder lives in :mod:`slimtoken.profiles` (one config
 # surface shared by proxy / CLI / MCP / skill — no named profiles). These two
@@ -195,6 +237,7 @@ def _minify_body(body: bytes, fmt: str = "anthropic") -> bytes:
         if _CFG.enabled_stages:
             parsed, stats = minify_request(parsed, _CFG)
             print(f"[proxy] minify ({fmt}): {stats.summary()}", file=sys.stderr)
+            _record_minify(stats)
         if fmt != "anthropic":
             parsed = adapters.from_canonical(parsed, fmt)
         return jdumps(parsed)

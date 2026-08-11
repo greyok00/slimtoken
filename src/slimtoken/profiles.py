@@ -58,6 +58,7 @@ def build_config() -> MinifyConfig:
         dedup_min_chars=_int("SLIMTOKEN_DEDUP_MIN_CHARS", 200),
         distill_max_chars=_int("SLIMTOKEN_DISTILL_MAX_CHARS", 160),
         tool_compress=_bool("SLIMTOKEN_TOOL_COMPRESS", True),
+        minify_dom=_bool("SLIMTOKEN_MINIFY_DOM", False),
     )
 
 

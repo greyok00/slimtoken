@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "slimtoken"
-version = "0.3.3"
+version = "0.3.4"
 description = "A standalone, all-on-by-default token-optimization layer for LLM requests: minifies tools, system, and messages (code-fence aware), collapses duplicate tool results, distills old turns, prunes to a token budget, and type-compresses tool output. Drop-in async HTTP(S) proxy for Anthropic, OpenAI, and Ollama backends; also an MCP server (stdio) and a CLI. Ships with orjson/xxhash/tiktoken for fast JSON, hashing, and real token counting."
 readme = "README.md"
 requires-python = ">=3.10"

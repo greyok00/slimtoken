@@ -18,6 +18,7 @@ dedup; short conversation → no distill/budget; short system → no system mini
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Dict, Set
 
@@ -30,6 +31,11 @@ from .distill_old_turns import distill_text, DEFAULT_MAX_CHARS as _DISTILL_MAX
 from .token_budget import enforce_budget
 from .tokencount import count_obj
 from collections import Counter
+
+# DOM stage is imported lazily (optional) so the core pipeline stays decoupled
+# from the DOM module.
+_DOM_THRESHOLD = 4096
+_HTML_HINT = re.compile(r"<(?:html|!doctype|body|div|script)\b", re.IGNORECASE)
 
 
 @dataclass
@@ -44,6 +50,8 @@ class MinifyConfig:
     distill_max_chars: int = _DISTILL_MAX
     # Lossy opt-in (off by default — see tool_result_compress; not wired here).
     tool_compress: bool = False
+    # Lossy opt-in: prune large HTML tool_results (see dom_pruner).
+    minify_dom: bool = False
 
 
 @dataclass
@@ -59,6 +67,7 @@ class MinifyStats:
     budget_tokens_before: int = 0
     budget_tokens_after: int = 0
     tool_compressed: int = 0
+    dom_minified: int = 0
     errors: list = field(default_factory=list)
 
     def summary(self) -> str:
@@ -89,6 +98,44 @@ def _minify_system_field(system):
                 out.append(block)
         return out
     return system
+
+
+def _maybe_prune_dom_in_messages(messages, stats):
+    """Opt-in: prune tool_result blocks that look like large HTML payloads."""
+    if not isinstance(messages, list):
+        return messages
+    try:
+        from .dom_pruner import prune_dom
+    except Exception:
+        return messages
+    changed = False
+    new_msgs = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            new_msgs.append(msg)
+            continue
+        c = msg.get("content")
+        if isinstance(c, list):
+            nc = []
+            for block in c:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    rc = block.get("content")
+                    if isinstance(rc, str) and len(rc) > _DOM_THRESHOLD and _HTML_HINT.search(rc):
+                        try:
+                            pruned = prune_dom(rc, "proxy")
+                            nb = dict(block)
+                            nb["content"] = pruned
+                            nc.append(nb)
+                            stats.dom_minified += 1
+                            changed = True
+                            continue
+                        except Exception as e:
+                            stats.errors.append(f"dom:{e}")
+                nc.append(block)
+            new_msgs.append({**msg, "content": nc})
+        else:
+            new_msgs.append(msg)
+    return new_msgs if changed else messages
 
 
 def _distill_content(content, max_chars):
@@ -262,6 +309,13 @@ def minify_request(body: dict, cfg: MinifyConfig) -> tuple:
                     nb["messages"] = new_msgs
         except Exception as e:
             stats.errors.append(f"messages:{e}")
+
+    # 5b. dom (opt-in) — prune large HTML tool_results before the budget pass.
+    if cfg.minify_dom and "messages" in nb:
+        try:
+            nb["messages"] = _maybe_prune_dom_in_messages(nb.get("messages"), stats)
+        except Exception as e:
+            stats.errors.append(f"dom:{e}")
 
     # 6. budget — pair-safe hard prune (backstop). Conditional: only if over.
     if cfg.token_budget > 0 and "messages" in nb:

@@ -79,6 +79,7 @@ sequenceDiagram
 | 🔄 dedup | Collapse repeated `tool_result` contents; latest kept verbatim, older copies stubbed. |
 | 📝 distill | Truncate old assistant prose beyond the last `SLIMTOKEN_KEEP_LAST` (4) turns to 160 chars/turn. Fence-aware, preserves tool blocks, no model call. |
 | 🎯 budget | Hard token cap (`SLIMTOKEN_MINIFY_BUDGET`, 131072); drops a leading prefix pair-safely — only when over budget. |
+| 🌐 dom *(opt-in)* | `SLIMTOKEN_MINIFY_DOM=1` — prune large HTML `tool_result` payloads (strip script/style/svg, nav/footer/sidebar, `class`/`id`/`data-*`/`aria-*` attrs, collapse to text). Session-aware LRU cache. |
 
 **Safety guarantees** — code fences (``` / ~~~) preserved byte-identical; pruning
 is pair-safe (a `tool_result` is never orphaned from its `tool_use`); identity-based
@@ -289,7 +290,7 @@ Two stages discard information. **Tool-result compression is on by default**
 | Stage | Env | Default | What it does |
 |-------|-----|:-------:|--------------|
 | 🗜️ tool compression | `SLIMTOKEN_TOOL_COMPRESS` | **1** | Replace large `tool_result` content with a compact, type-detected representation (directory listings, git output, logs, JSON, source) + a `[slimtoken-compressed] N B -> M B` metadata header. Pair-safe — only the `content` field changes. Set `0` to disable. |
-| ✂️ output filter | `SLIMTOKEN_MAX_TOKENS=N` / `SLIMTOKEN_STOP=a,b` | off | Enforce a max output-token cap (counted with the real tokenizer) and/or stop-sequence truncation on the streamed response. Raw passthrough with zero overhead when unset. |
+| ✂️ output filter | `SLIMTOKEN_MAX_TOKENS=N` / `SLIMTOKEN_STOP=a,b` / `SLIMTOKEN_FILLER=1` | off | Enforce a max output-token cap (counted with the real tokenizer), stop-sequence truncation, and/or lead-in filler stripping ("Sure!", "Here is the code:", …) on the streamed response. Raw passthrough with zero overhead when unset. |
 
 ## Config
 
@@ -309,8 +310,11 @@ Defaults are the recommended values. Set any to `0` to disable.
 | `SLIMTOKEN_DISTILL_MAX_CHARS` | 160 | max chars per distilled old turn |
 | `SLIMTOKEN_MINIFY_TOOL_SKIP` | _(none)_ | comma-list of tool names to never minify |
 | `SLIMTOKEN_TOOL_COMPRESS` | 1 | lossy type-specific tool-result compression |
+| `SLIMTOKEN_MINIFY_DOM` | 0 | lossy opt-in: prune large HTML tool_results |
 | `SLIMTOKEN_MAX_TOKENS` | _(unset)_ | output-token cap (enables output filter) |
 | `SLIMTOKEN_STOP` | _(unset)_ | comma-joined stop sequences (enables output filter) |
+| `SLIMTOKEN_FILLER` | 0 | strip lead-in filler ("Sure!", "Here is the code:") from the response head |
+| `SLIMTOKEN_STATS_FILE` | _(unset)_ | path to persist cumulative minify stats (runs, tokens in/out, saved %, 60-run history) as JSON |
 | `SLIMTOKEN_HTTP2` | 0 | use HTTP/2 to the upstream |
 | `SLIMTOKEN_PORT` | 8181 | listen port |
 | `SLIMTOKEN_UPSTREAM` | _(required to serve)_ | backend URL |

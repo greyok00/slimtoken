@@ -1,9 +1,9 @@
-"""output_filter — enforce max_tokens / stop on the streamed response.
+"""output_filter — enforce max_tokens / stop / filler-strip on the streamed response.
 
-Gated by ``SLIMTOKEN_MAX_TOKENS`` (integer) and/or ``SLIMTOKEN_STOP`` (a
-comma-joined list of stop strings). When BOTH are unset, the filter is inert
-and the proxy streams raw bytes untouched (zero overhead). When either is set,
-the filter wraps the response stream and:
+Gated by ``SLIMTOKEN_MAX_TOKENS`` (integer), ``SLIMTOKEN_STOP`` (a comma-joined
+list of stop strings), and/or ``SLIMTOKEN_FILLER`` (bool). When ALL are unset,
+the filter is inert and the proxy streams raw bytes untouched (zero overhead).
+When any is set, the filter wraps the response stream and:
 
   - ``max_tokens``: counts emitted text tokens incrementally with the bundled
     cl100k tokenizer, and closes the stream once the cap is reached (best-effort
@@ -11,6 +11,12 @@ the filter wraps the response stream and:
   - ``stop``: keeps a rolling buffer, and when a stop string is matched, the
     stream is truncated to end exactly at the match (the stop string itself is
     NOT emitted, matching the Anthropic API stop semantics).
+  - ``filler``: strips model-generated lead-in filler ("Sure!", "Here is the
+    code:", "Let me know if you need anything else.") from the START of the
+    response. Streaming-safe: a small pending buffer holds the response head
+    until it is either consumed as filler or confirmed as real content, so a
+    filler phrase split across chunks is still caught. Backported from
+    CortexAgent's ``minify_response`` (R4 output-side minify).
 
 The filter operates on decoded SSE text. To stay robust against arbitrary
 upstream formats, it only touches ``data:`` payloads that decode as JSON and
@@ -24,6 +30,24 @@ from __future__ import annotations
 import json
 import os
 from typing import List, Optional
+
+# Lead-in filler phrases stripped when SLIMTOKEN_FILLER=1. Same set as
+# CortexAgent's lib/grammar_proxy.py minify_response(). Stripped only from the
+# very start of the response, never mid-stream.
+_FILLER_PATTERNS = (
+    "Sure!\n", "Sure!\n\n", "Sure, ", "Sure.\n",
+    "Here is the code:\n", "Here is the code:\n\n",
+    "Here is your code:\n", "Here is your code:\n\n",
+    "Let me know if you need anything else.\n",
+    "Let me know if you have any questions.\n",
+    "I hope this helps!\n", "I hope this helps.\n",
+    "Feel free to ask if you have any questions.\n",
+)
+_MAX_FILLER_LEN = max(len(p) for p in _FILLER_PATTERNS)
+
+
+def _env_filler() -> bool:
+    return os.environ.get("SLIMTOKEN_FILLER", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _env_max_tokens() -> Optional[int]:
@@ -45,7 +69,7 @@ def _env_stops() -> List[str]:
 
 
 def is_active() -> bool:
-    return bool(_env_max_tokens() or _env_stops())
+    return bool(_env_max_tokens() or _env_stops() or _env_filler())
 
 
 class OutputFilter:
@@ -59,23 +83,27 @@ class OutputFilter:
     decides: pass through, or rewrite the text delta to enforce caps.
     """
 
-    def __init__(self, max_tokens: Optional[int] = None, stops: Optional[List[str]] = None):
+    def __init__(self, max_tokens: Optional[int] = None, stops: Optional[List[str]] = None,
+                 filler: bool = False):
         from .tokencount import get_encoder
         self.max_tokens = max_tokens
         self.stops = stops or []
+        self.filler = filler
         self._enc = get_encoder()
         self._emitted_tokens = 0
         self._closed = False
         self._buf = b""          # incomplete SSE frame buffer
         self._stop_rolling = ""  # rolling window for stop scanning
         self._stop_window = max((len(s) for s in self.stops), default=0) if self.stops else 0
+        self._filler_buf = ""    # pending start-of-response buffer (filler mode)
+        self._filler_done = False  # True once real content has been emitted
 
     # ── public API ───────────────────────────────────────────────────────────
     def feed(self, chunk: bytes) -> bytes:
         if self._closed or not chunk:
             return b"" if self._closed else chunk
-        # If neither lever is active, this object shouldn't exist — but guard.
-        if not self.max_tokens and not self.stops:
+        # If no lever is active, this object shouldn't exist — but guard.
+        if not self.max_tokens and not self.stops and not self.filler:
             return chunk
         self._buf += chunk
         out = bytearray()
@@ -98,6 +126,13 @@ class OutputFilter:
         if self._closed:
             return b""
         if not self._buf:
+            # Response ended while still buffering a filler prefix (e.g. the
+            # whole reply was "Sure") — emit the pending text verbatim.
+            if self._filler_buf and not self._filler_done:
+                self._filler_done = True
+                pending = self._filler_buf
+                self._filler_buf = ""
+                return pending.encode("utf-8")
             return b""
         out = self._process_frame(self._buf) + b"\n\n"
         self._buf = b""
@@ -151,10 +186,44 @@ class OutputFilter:
             self._closed = True
         return out.encode("utf-8")
 
+    def _strip_filler(self, text: str) -> Optional[str]:
+        """Strip leading filler from the response head. Returns the text to
+        emit, or None when still buffering (the head may be a partial filler
+        phrase spanning chunks)."""
+        combined = self._filler_buf + text
+        # Strip any/all consecutive leading filler phrases.
+        while True:
+            stripped = combined
+            for pat in _FILLER_PATTERNS:
+                if stripped.startswith(pat):
+                    stripped = stripped[len(pat):]
+                    break
+            if stripped == combined:
+                break
+            combined = stripped
+        if not combined:
+            # Everything so far was filler — keep buffering.
+            self._filler_buf = ""
+            return None
+        if len(combined) < _MAX_FILLER_LEN and any(
+                pat.startswith(combined) for pat in _FILLER_PATTERNS):
+            # Combined is a prefix of a filler phrase — it may span chunks.
+            self._filler_buf = combined
+            return None
+        # Real content reached.
+        self._filler_done = True
+        self._filler_buf = ""
+        return combined
+
     def _filter_text(self, text: str) -> tuple:
-        """Returns (filtered_text, stop_hit). Enforces max_tokens then stop."""
+        """Returns (filtered_text, stop_hit). Enforces filler, then stop, then max_tokens."""
         if self._closed:
             return ("", True)
+        # 0. filler-strip (response head only)
+        if self.filler and not self._filler_done:
+            text = self._strip_filler(text)
+            if text is None:
+                return ("", False)  # still buffering filler; emit nothing
         # 1. stop-sequence scanning (rolling buffer)
         if self.stops:
             combined = self._stop_rolling + text
@@ -201,6 +270,7 @@ def from_env() -> Optional["OutputFilter"]:
     """Build an OutputFilter from env, or None when inactive (raw passthrough)."""
     mt = _env_max_tokens()
     stops = _env_stops()
-    if not mt and not stops:
+    filler = _env_filler()
+    if not mt and not stops and not filler:
         return None
-    return OutputFilter(max_tokens=mt, stops=stops)
+    return OutputFilter(max_tokens=mt, stops=stops, filler=filler)

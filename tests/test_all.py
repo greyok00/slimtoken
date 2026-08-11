@@ -596,6 +596,122 @@ def test_output_filter():
     check("non-data frame passes through", out == b": ping\n\n")
 
 
+def test_output_filter_filler():
+    """SLIMTOKEN_FILLER strips lead-in filler from the response head."""
+    from slimtoken.output_filter import OutputFilter, from_env, is_active
+
+    def frame(text):
+        return ("data: " + json.dumps({"delta": {"text": text}}) + "\n\n").encode()
+
+    # 1. single chunk: all leading filler stripped, real content kept
+    f = OutputFilter(filler=True)
+    out = f.feed(frame("Sure!\nHere is the code:\nprint(1)"))
+    check("filler single-chunk strips lead-in", b"print(1)" in out
+          and b"Sure" not in out and b"Here is the code" not in out)
+
+    # 2. filler phrase split across chunks is still caught
+    f = OutputFilter(filler=True)
+    c1 = f.feed(frame("Sure"))
+    c2 = f.feed(frame("!\nThe answer is 42"))
+    check("filler split-chunk caught", b"42" in c2 and b"Sure" not in c1 + c2)
+
+    # 3. real content starting immediately passes through untouched
+    f = OutputFilter(filler=True)
+    out = f.feed(frame("The answer is 42"))
+    check("filler real-content passthrough", b"The answer is 42" in out)
+
+    # 4. whole response is filler -> finish() flushes it verbatim
+    f = OutputFilter(filler=True)
+    c = f.feed(frame("Sure!"))
+    fin = f.finish()
+    check("filler whole-response flushed at finish", b"Sure" in fin)
+
+    # 5. filler composes with max_tokens
+    f = OutputFilter(filler=True, max_tokens=1000)
+    out = f.feed(frame("Sure!\nlong content here"))
+    check("filler composes with max_tokens", b"long content" in out and b"Sure" not in out)
+
+    # 6. env wiring: SLIMTOKEN_FILLER=1 activates the filter
+    os.environ["SLIMTOKEN_FILLER"] = "1"
+    check("filler is_active", is_active())
+    ef = from_env()
+    check("filler from_env builds", ef is not None and ef.filler)
+    os.environ.pop("SLIMTOKEN_FILLER", None)
+    check("filler inactive when unset", not is_active())
+
+
+def test_dom_stage():
+    """opt-in dom stage prunes large HTML tool_results; pair-safe."""
+    from slimtoken.dom_pruner import prune_dom, clear_dom_cache
+    from slimtoken.pipeline import MinifyConfig, minify_request
+
+    # 1. prune_dom strips script/nav/attrs
+    h = ('<html><head><script>alert(1)</script></head>'
+         '<body><nav>menu</nav><div class="x" id="y" data-z="w">hi</div>'
+         '<footer>copy</footer></body></html>')
+    p = prune_dom(h, "s")
+    check("dom strips script", "alert" not in p)
+    check("dom strips nav/footer", "menu" not in p and "copy" not in p)
+    check("dom strips attrs", "class=" not in p and "data-" not in p)
+    check("dom keeps content", "hi" in p)
+
+    # 2. pipeline stage fires only when minify_dom=True and content is big HTML
+    big_html = "<html><body>" + "<div>row</div>" * 2000 + "</body></html>"
+    body = {"messages": [{"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "t1", "content": big_html}]}]}
+    cfg_off = MinifyConfig(minify_dom=False)
+    nb, stats = minify_request(copy.deepcopy(body), cfg_off)
+    check("dom stage off by default", stats.dom_minified == 0)
+    cfg_on = MinifyConfig(minify_dom=True)
+    nb, stats = minify_request(copy.deepcopy(body), cfg_on)
+    check("dom stage fires when enabled", stats.dom_minified == 1)
+    check("dom stage pruned content", len(nb["messages"][0]["content"][0]["content"]) < len(big_html))
+
+    # 3. pair-safety: tool_use_id preserved, message count unchanged
+    check("dom preserves tool_use_id", nb["messages"][0]["content"][0]["tool_use_id"] == "t1")
+    check("dom preserves message count", len(nb["messages"]) == 1)
+
+    # 4. small / non-HTML tool_results untouched
+    body2 = {"messages": [{"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "t2", "content": "short text"}]}]}
+    nb2, stats2 = minify_request(copy.deepcopy(body2), cfg_on)
+    check("dom skips small results", stats2.dom_minified == 0)
+    check("dom skips small content", nb2["messages"][0]["content"][0]["content"] == "short text")
+
+    clear_dom_cache()
+
+
+def test_stats_persistence():
+    """SLIMTOKEN_STATS_FILE persists cumulative minify stats to disk."""
+    from slimtoken import proxy as _proxy
+
+    with tempfile.TemporaryDirectory() as td:
+        stats_file = str(Path(td) / "minify_stats.json")
+        os.environ["SLIMTOKEN_STATS_FILE"] = stats_file
+        # re-read the module-level file path (built at import)
+        _proxy._MINIFY_STATS_FILE = stats_file
+        _proxy._minify_stats = {
+            "runs": 0, "tokens_in": 0, "tokens_out": 0, "tokens_saved": 0,
+            "ratio_pct": 0.0, "last_run_ts": "", "last_saved_pct": 0.0,
+            "history_60s": [],
+        }
+        try:
+            from slimtoken.pipeline import MinifyConfig, minify_request
+            body = {"messages": [{"role": "user", "content": "hello world this is a test"}]}
+            cfg = MinifyConfig()
+            _, stats = minify_request(body, cfg)
+            _proxy._record_minify(stats)
+            _proxy._record_minify(stats)
+            data = json.loads(Path(stats_file).read_text())
+            check("stats file written", data["runs"] == 2)
+            check("stats tokens tracked", data["tokens_in"] > 0 and data["tokens_out"] > 0)
+            check("stats ratio computed", data["ratio_pct"] >= 0)
+            check("stats history capped", len(data["history_60s"]) == 2)
+        finally:
+            os.environ.pop("SLIMTOKEN_STATS_FILE", None)
+            _proxy._MINIFY_STATS_FILE = None
+
+
 # ── adapters (OpenAI/Ollama ↔ Anthropic canonical) ───────────────────────────
 def test_adapters():
     from slimtoken import adapters
