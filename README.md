@@ -2,18 +2,61 @@
 
 🔀 A token-optimization layer that sits between an Anthropic-compatible client and
 its backend — a local llama-server or a cloud API — and rewrites every request to
-use **fewer tokens** before forwarding it. Tool schemas are trimmed, the system
-prompt is compressed, old turns are distilled, repeated tool results are
-collapsed, and tool output is type-compressed. On the way back, it can cap output
-tokens, truncate at stop sequences, and strip lead-in filler.
+use **fewer tokens** before forwarding it.
 
-Fewer input tokens → faster prompt-eval, lower cost, more context headroom.
+**What it does, in one line:** it strips the waste out of every LLM round-trip —
+repeated tool output, verbose old turns, bloated system prompts, lead-in filler —
+so you send fewer tokens in and receive fewer tokens out. Fewer tokens → faster
+prompt-eval, lower cost, more context headroom.
 
 MIT-licensed. Ships with `orjson`, `xxhash`, and `tiktoken` for fast JSON,
-hashing, and real token counting. The full pipeline runs **on by default**;
-disable any stage with a `SLIMTOKEN_*` env switch, or `SLIMTOKEN_MINIFY=0` for raw
-passthrough. **Filler-strip is on by default** (lead-in filler is pure waste);
-the output token cap and stop sequences are opt-in.
+hashing, and real token counting.
+
+## Token reduction — measured, not claimed
+
+Every number below is computed by slimtoken's own real cl100k tokenizer on
+representative payloads. Run them yourself with `slimtoken presets --measure`.
+
+### Input — the always-on pipeline
+
+The request-side pipeline (tools · system · messages · dedup · distill ·
+tool_compress) runs on every request by default. Reduction scales with how much
+waste the session carries:
+
+| Scenario | Before | After | Reduction |
+|----------|-------:|------:|----------:|
+| Typical coding session (a file re-read 3×, verbose turns) | 772 tok | 507 tok | **−34.3%** |
+| Bloated session (6 repeated file reads + verbose history) | 3 312 tok | 1 187 tok | **−64.2%** |
+| HTML dump session (10 scraped pages) | 10 894 tok | 1 768 tok | **−83.8%** |
+
+### Output — the filter (on by default)
+
+The response-side filter strips lead-in filler ("Sure!", "Here is the code:",
+"Let me know if you need anything else.", …) from the streamed head. **On by
+default** — set `SLIMTOKEN_FILLER=0` to disable. The token cap
+(`SLIMTOKEN_MAX_TOKENS`) and stop sequences (`SLIMTOKEN_STOP`) are opt-in.
+
+| Scenario | Before | After | Reduction |
+|----------|-------:|------:|----------:|
+| Short reply with filler lead-in | 44 tok | 38 tok | **−13.6%** |
+| Long reply with filler lead-in | 380 tok | 374 tok | **−1.6%** |
+| Clean reply (no filler) | 21 tok | 21 tok | 0% (nothing to strip) |
+
+### Combined — one round-trip
+
+Input reduction + output reduction together, on the same session:
+
+| Scenario | Before | After | Reduction |
+|----------|-------:|------:|----------:|
+| Typical session | 793 tok | 528 tok | **−33.4%** |
+| Bloated session | 3 692 tok | 1 561 tok | **−57.7%** |
+| HTML dump session | 10 938 tok | 1 806 tok | **−83.5%** |
+
+> **The honest caveat:** reduction is proportional to waste. A clean, short
+> session with no repeated content and no filler gets ~0% — slimtoken never
+> invents savings. The more a session re-reads files, repeats tool output, or
+> carries verbose old turns, the more it saves. That's the point: it removes
+> redundancy, not meaning.
 
 ## Quick start
 
@@ -38,7 +81,7 @@ slimtoken-mcp                                          # stdio JSON-RPC
 on uninstall). It never touches `settings.json`, `CLAUDE.md`, or `mcp.json`, so
 removal is clean and fully reversible: `slimtoken uninstall`.
 
-## What you get — the pipeline
+## What it does — the pipeline
 
 A minify pipeline runs on each request, all on by default. The diagram shows the
 request lifecycle with the `t0–t4` latency boundaries the proxy records per
@@ -230,7 +273,7 @@ bloated payload — computed by the pipeline, not hand-waved
 > Reduction is **config-dependent, not model-dependent** — the pipeline rewrites
 > the request regardless of which model consumes it, so every tier shows the same
 > number (the always-on config on a bloated payload). On a typical session it's
-> ~9%. Tune the config with the `SLIMTOKEN_*` env knobs, not by switching models.
+> ~34%. Tune the config with the `SLIMTOKEN_*` env knobs, not by switching models.
 
 ## Effective context window — dense vs MoE
 
