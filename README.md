@@ -1,16 +1,30 @@
 # slimtoken
 
-🔀 A token-optimization layer that sits between an Anthropic-compatible client and
-its backend — a local llama-server or a cloud API — and rewrites every request to
-use **fewer tokens** before forwarding it.
+### What this is
 
-**What it does, in one line:** it strips the waste out of every LLM round-trip —
-repeated tool output, verbose old turns, bloated system prompts, lead-in filler —
-so you send fewer tokens in and receive fewer tokens out. Fewer tokens → faster
-prompt-eval, lower cost, more context headroom.
+Every LLM call spends tokens — on a bloated system prompt, a tool schema you
+wrote twice, an old turn that no longer matters, "Sure!" at the head of every
+reply. **slimtoken rewrites the request before it leaves your machine** so the
+model sees less, charges less, and answers faster.
 
-MIT-licensed. Ships with `orjson`, `xxhash`, and `tiktoken` for fast JSON,
-hashing, and real token counting.
+It's a small Python toolkit that runs three ways: as an always-on proxy in
+front of any Anthropic / OpenAI / Ollama backend, as an MCP server any agent
+can call, or imported as a plain library. Same code, same wins either way.
+
+### What changed in v0.3.6
+
+Beyond the request-body minify pipeline, slimtoken now ships **prompt reframe**
+— a 1-ms CPU pass that takes a rambling 200-word user prompt and returns a
+tight 25-word instruction, with the original intent preserved by construction
+(no LLM roundtrip). It's exposed as `slimtoken.prompt_reframe`, an MCP server
+(`slimtoken-reframe-mcp`), and an Agent Skill (`skills/prompt-reframe/`).
+
+### What this README is
+
+A measured walkthrough: a one-table token-savings proof, the per-stage pipeline
+at a glance, a worked before/after, install + first-call instructions, and links
+to the deep reference. MIT-licensed; ships with `orjson`, `xxhash`, and
+`tiktoken` so the token counts below are real, not guesstimates.
 
 ## Token reduction — measured, not claimed
 

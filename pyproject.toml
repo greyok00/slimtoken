@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "slimtoken"
 version = "0.3.7"
-description = "A standalone, all-on-by-default token-optimization layer for LLM requests: minifies tools, system, and messages (code-fence aware), collapses duplicate tool results, distills old turns, prunes to a token budget, and type-compresses tool output. Drop-in async HTTP(S) proxy for Anthropic, OpenAI, and Ollama backends; also an MCP server (stdio) and a CLI. Ships with orjson/xxhash/tiktoken for fast JSON, hashing, and real token counting."
+description = "For developers and teams who care about token cost and context headroom. slimtoken rewrites every LLM request — tools, system prompts, message history, and individual user prompts — before it leaves your machine. Runs as a proxy, an MCP server, a CLI, or a plain Python import. MIT, no SaaS, works with Anthropic / OpenAI / Ollama backends."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
