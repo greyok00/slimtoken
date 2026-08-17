@@ -4,6 +4,18 @@ All notable changes to slimtoken are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project adheres
 to [Semantic Versioning](https://semver.org/).
 
+## [0.3.7] — 2026-08-17
+
+### Added
+- **`Prompt reframe` section in README.md** — explanation, flowchart, the
+  five stages table, three ways to use it, when NOT to use, and links to
+  the Agent Skill manifest + reference. The README previously only
+  documented the request-body minify pipeline.
+
+### Notes
+- Documentation release. No code changes. Wheels are byte-identical to v0.3.6
+  except for the version string in `__init__.py` and `pyproject.toml`.
+
 ## [0.3.6] — 2026-08-16
 
 ### Added
@@ -52,6 +64,7 @@ Agent Skill + CLI; Anthropic / OpenAI / Ollama backends; dense + MoE
 high-context VRAM presets (4 / 8 / 16 GB); always-on config via raw
 `SLIMTOKEN_*` env knobs; bundled orjson / xxhash / tiktoken.
 
+[0.3.7]: https://github.com/greyok00/slimtoken/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/greyok00/slimtoken/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/greyok00/slimtoken/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/greyok00/slimtoken/compare/v0.3.3...v0.3.4

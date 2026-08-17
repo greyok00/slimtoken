@@ -145,6 +145,90 @@ byte-identical; pruning is pair-safe (a `tool_result` is never orphaned from its
 `tool_use`); identity-based change detection returns unchanged content zero-copy;
 the `grammar` field is stripped from request bodies.
 
+## Prompt reframe — when a *user prompt* is the problem
+
+The proxy above rewrites request **bodies** (tools, system, message history) on
+their way to a model. That's a different problem from tightening a single
+user prompt. If you're about to spend tokens on a rambling 200-word request
+that could be a sharp 25-word instruction, you'll want a rewriter first.
+
+`slimtoken.prompt_reframe` is that rewriter. **Pure CPU, no model roundtrip**;
+~1 ms per call. Five stages, called individually or as the bundled
+`frame_prompt` pipeline:
+
+```mermaid
+flowchart LR
+    A[raw user prompt] --> B[classify_domain]
+    B --> C[reframe_prompt<br/>strip filler + dedupe]
+    C --> D[shrink_prompt<br/>TextRank-lite<br/>cap to word budget]
+    D --> E[minify_prompt<br/>cosmetic squeeze]
+    E --> F[build_system<br/>tight declarative system]
+    F --> G[tight prompt + system]
+```
+
+| Stage | What it does |
+|-------|--------------|
+| 🏷️ `classify_domain` | Keyword match into {business, professional, osint, cybersecurity, code, general}. Used to pick the right domain hint when composing the system prompt. |
+| 🧽 `reframe_prompt` | Strip 30+ conversational filler phrases (`can you basically just tell me…`, `in order to`, `due to the fact that`), drop fragment patterns (`...`, `the the`), dedupe sentences, normalize whitespace. Lossless on actionable claims. |
+| ✂️ `shrink_prompt` | Rank sentences by relevance + length and pack the top-N until the word budget is met. Modes: `aggressive` (~20 words), `balanced` (~50), `preserve` (~150). Pass `max_tokens=N` to override. **Deterministic; built from sentences already in the input.** |
+| 🪶 `minify_prompt` | Collapse whitespace; drop redundant punctuation runs. Cosmetic only. |
+| 🛠️ `build_system` | Compose a tight system prompt from role + style + domain hints + up to 6 rules. Single short line so it doesn't waste context. |
+
+**Why TextRank-lite, not an LLM?** It can't drop intent. The output is built
+from sentences that already appear in the user's prompt, ranked by their
+overlap with the prompt itself. A separate small LLM *could* paraphrase — but
+it costs a roundtrip and can quietly lose a detail. Use the reframe for
+intent-preserving shrink; pair it with an LLM only when you actually want a
+paraphrase.
+
+**Worked example:**
+
+| Input | `reframe` + `shrink(balanced)` |
+|---|---|
+| *Can you basically just tell me what is the answer really kind of like basically please help me with this.* | *Tell me what is the answer.* |
+| 1109 chars / 208 words / ~10 sentences about a Q3 revenue review | 212 chars / 27 words / 2 sentences with every actionable claim preserved |
+
+```python
+from slimtoken.prompt_reframe import frame_prompt
+
+tight, system, domain = frame_prompt(user_prompt, mode="balanced")
+# → ("Revenue figure for Q3? Lock the plan or reforecast.",
+#    "Role: generalist. Style: terse. Domain (business): ...",
+#    "business")
+```
+
+**Three ways to use it:**
+
+```bash
+# Python API — drop into any script, batch job, or web service
+python -c "from slimtoken.prompt_reframe import frame_prompt; \
+  print(frame_prompt('rambling prompt here')[0])"
+
+# CLI — pipe prompts in, get tight prompts as JSON out
+python -m slimtoken.prompt_reframe "your rambling prompt here"
+python -m slimtoken.prompt_reframe json "your prompt"
+
+# MCP stdio — for any host that speaks MCP
+slimtoken-reframe-mcp
+# exposes: slimtoken.reframe.{classify_domain, reframe, shrink,
+#                          minify, build_system, frame}
+```
+
+**When NOT to use it:**
+
+- The prompt is already short (< 80 words) — the reframe is a no-op.
+- You want a *semantic paraphrase* the input doesn't already contain. Use an
+  LLM for that.
+- You're a code agent and the prompt is mostly code — never touch code fences.
+
+**Backwards-compatible bug fix in v0.3.6:** `shrink_prompt` previously had a
+silent `max_tokens=80` default that shadowed `mode="balanced"` (50). The
+default is now `None` — `mode` wins unless an explicit int is passed.
+
+→ Full algorithm in
+[`skills/prompt-reframe/references/stages.md`](skills/prompt-reframe/references/stages.md).
+→ Agent Skill manifest: [`skills/prompt-reframe/SKILL.md`](skills/prompt-reframe/SKILL.md).
+
 ## Practical example — what it actually does
 
 A realistic bloated session (6 repeated file reads + verbose history, 18 KB body):
