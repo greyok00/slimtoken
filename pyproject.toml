@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "slimtoken"
-version = "0.3.5"
+version = "0.3.6"
 description = "A standalone, all-on-by-default token-optimization layer for LLM requests: minifies tools, system, and messages (code-fence aware), collapses duplicate tool results, distills old turns, prunes to a token budget, and type-compresses tool output. Drop-in async HTTP(S) proxy for Anthropic, OpenAI, and Ollama backends; also an MCP server (stdio) and a CLI. Ships with orjson/xxhash/tiktoken for fast JSON, hashing, and real token counting."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{name = "greyok00"}]
-keywords = ["llm", "anthropic", "openai", "ollama", "proxy", "minify", "context", "llama-server", "async", "mcp"]
+keywords = ["llm", "anthropic", "openai", "ollama", "proxy", "minify", "context", "llama-server", "async", "mcp", "prompt-reframe"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -33,6 +33,7 @@ uvloop = ["uvloop>=0.19"]  # optional faster event loop (linux/mac)
 slimtoken = "slimtoken.cli:main"
 slimtoken-serve = "slimtoken.proxy:main"
 slimtoken-mcp = "slimtoken.mcp_server.server:main"
+slimtoken-reframe-mcp = "slimtoken.mcp_server.prompt_reframe_server:main"
 
 [tool.setuptools.package-data]
 slimtoken = ["data/*.tiktoken"]

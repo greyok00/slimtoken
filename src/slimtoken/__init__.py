@@ -10,6 +10,7 @@ uninstall = restore the prior value. Claude Code's own config is never touched.
 
 Public API:
     from slimtoken.pipeline import minify_request, MinifyConfig
+    from slimtoken import prompt_reframe
 """
 from .pipeline import (  # noqa: F401
     MinifyConfig,
@@ -17,5 +18,5 @@ from .pipeline import (  # noqa: F401
     minify_request,
 )
 
-__version__ = "0.3.5"
-__all__ = ["MinifyConfig", "MinifyStats", "minify_request"]
+__version__ = "0.3.6"
+__all__ = ["MinifyConfig", "MinifyStats", "minify_request", "prompt_reframe"]
