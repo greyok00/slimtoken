@@ -4,7 +4,8 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-pip install "$HERE" >/dev/null
+pip install -e "$HERE" >/dev/null
+python3 "$HERE/tools/build_opt.py"  # Cython by default; skips gracefully
 slimtoken install "$@"
 echo
 echo "Done. slimtoken is installed."
