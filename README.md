@@ -11,9 +11,9 @@ It's a small Python toolkit that runs three ways: as an always-on proxy in
 front of any Anthropic / OpenAI / Ollama backend, as an MCP server any agent
 can call, or imported as a plain library. Same code, same wins either way.
 
-### What changed in v0.3.6
+### Prompt reframe — CPU, not LLM
 
-Beyond the request-body minify pipeline, slimtoken now ships **prompt reframe**
+Alongside the request-body minify pipeline, slimtoken ships **prompt reframe**
 — a 1-ms CPU pass that takes a rambling 200-word user prompt and returns a
 tight 25-word instruction, with the original intent preserved by construction
 (no LLM roundtrip). It's exposed as `slimtoken.prompt_reframe`, an MCP server
@@ -84,11 +84,16 @@ Input reduction + output reduction together, on the same session:
 without relying on the model to remember to call anything.
 
 ```bash
+# Local build — Cython-compiled by default (skips gracefully to pure Python)
+git clone https://github.com/greyok00/slimtoken
+cd slimtoken && ./scripts/install.sh
+
+# or, from PyPI:
 pip install slimtoken
 
 # Default setup — the proxy (one command, reversible)
 slimtoken install
-slimtoken serve --upstream http://127.0.0.1:8082        # local llama-server
+slimtoken serve --upstream http://127.0.0.1:8080        # local llama-server
 # or:  slimtoken serve --upstream https://api.anthropic.com   # cloud
 
 # `slimtoken install` already wired ANTHROPIC_BASE_URL to the proxy.
@@ -240,9 +245,8 @@ slimtoken-reframe-mcp
   LLM for that.
 - You're a code agent and the prompt is mostly code — never touch code fences.
 
-**Backwards-compatible bug fix in v0.3.6:** `shrink_prompt` previously had a
-silent `max_tokens=80` default that shadowed `mode="balanced"` (50). The
-default is now `None` — `mode` wins unless an explicit int is passed.
+`shrink_prompt` has no hidden `max_tokens` default: `mode` decides the target
+length unless an explicit int is passed.
 
 → Full algorithm in
 [`skills/prompt-reframe/references/stages.md`](skills/prompt-reframe/references/stages.md).
@@ -294,10 +298,10 @@ zero overhead).
 | 🛑 stop sequences | `SLIMTOKEN_STOP=a,b` / `--stop a,b` | off | Cut the stream at the first stop string (not emitted). |
 
 ```bash
-slimtoken serve --upstream http://127.0.0.1:8082 \
+slimtoken serve --upstream http://127.0.0.1:8080 \
   --max-tokens 2048 --stop "END" --tool-compress
 # or via env (filler needs no flag — it's on):
-SLIMTOKEN_MAX_TOKENS=2048 SLIMTOKEN_STOP=END slimtoken serve --upstream http://127.0.0.1:8082
+SLIMTOKEN_MAX_TOKENS=2048 SLIMTOKEN_STOP=END slimtoken serve --upstream http://127.0.0.1:8080
 ```
 
 The filler strip is a pending-buffer state machine — a phrase split across SSE
