@@ -1,7 +1,4 @@
-"""test_all — pytest-free tests for slimtoken (run: python3 test_all.py).
 
-Tests import slimtoken from the package install (or src/ on the path).
-"""
 import json
 import os
 import sys
@@ -44,7 +41,7 @@ def _tok(obj) -> int:
     return max(1, len(json.dumps(obj, separators=(",", ":"))) // 4)
 
 
-# ── 1. fence safety ──────────────────────────────────────────────────────────
+
 def test_fences():
     code = "```python\ndef f(x):\n    return x + 1\n```\n"
     mixed = "prose\n\n\n\n\nmore\n\n" + code + "after\n"
@@ -56,7 +53,7 @@ def test_fences():
           "code no close\n  ind" in "".join(s for f, s in seg if f))
 
 
-# ── 2. tool integrity ────────────────────────────────────────────────────────
+
 def test_tools():
     long_desc = ("Use this tool to read a file from the local filesystem and return "
                  "its full contents. You can access files by their absolute path. "
@@ -79,7 +76,7 @@ def test_tools():
     check("only first example kept", t["description"].count("```") == 2)
 
 
-# ── 3. system tags + budget pairing ──────────────────────────────────────────
+
 def test_system_and_budget():
     sys_ = "<cold_memory>\nr1\n</cold_memory>\n\n```\ncode=x\n```\n\n\n\n\nMore."
     out, _ = minify_request({"system": sys_, "messages": []}, MinifyConfig())
@@ -113,7 +110,7 @@ def test_system_and_budget():
     check("no orphan tool_results", not (res - use), f"orphans={res-use}")
 
 
-# ── 4. config optimizer ──────────────────────────────────────────────────────
+
 def test_config_optimizer():
     rec = co.recommend(vram_gb=16, model_path=None, model_size_gb=12.74,
                       kv_per_token_bytes=5120)
@@ -130,7 +127,7 @@ def test_config_optimizer():
     check("small model gets high ctx", rec2.ctx >= 131072, f"ctx={rec2.ctx}")
 
 
-# ── 5. install/uninstall reversibility ───────────────────────────────────────
+
 def test_install_uninstall():
     import importlib
     cli = importlib.import_module("slimtoken.cli")
@@ -155,9 +152,9 @@ def test_install_uninstall():
         check("existing config still preserved", "export FOO=bar" in text)
 
 
-# ── 6. dedup tool results ────────────────────────────────────────────────────
+
 def test_dedup():
-    big = "FILE CONTENTS\n" + ("line of code\n" * 200)  # ~2.6k chars, >min_chars
+    big = "FILE CONTENTS\n" + ("line of code\n" * 200)
     msgs = [
         {"role": "user", "content": "q1"},
         {"role": "assistant", "content": [{"type": "tool_use", "id": "tu1", "name": "R", "input": {}}]},
@@ -197,9 +194,9 @@ def test_dedup():
     check("dedup preserves pairs", not (res - use), f"orphans={res-use}")
 
 
-# ── 7. distill old turns ─────────────────────────────────────────────────────
+
 def test_distill():
-    long_ans = "I will now explain in great detail what I did and why. " * 40  # ~2.4k chars
+    long_ans = "I will now explain in great detail what I did and why. " * 40
     msgs = []
     for i in range(10):
         msgs.append({"role": "user", "content": "question %d" % i})
@@ -224,7 +221,7 @@ def test_distill():
     check("distill keeps first fence", "```python" in d and "code = 1" in d)
 
 
-# ── 8. pair-safety under default config (dedup + distill + budget) ───────────
+
 def test_pair_safety_defaults():
     big = "X" * 1500
     msgs = []
@@ -253,9 +250,9 @@ def test_pair_safety_defaults():
           f"in={st.tokens_in} out={st.tokens_out}")
 
 
-# ── 9. ≥50% default reduction on realistic bloated payload ───────────────────
+
 def test_default_reduction():
-    big_file = "".join("line %d: logic here\n" % i for i in range(500))  # ~9k chars
+    big_file = "".join("line %d: logic here\n" % i for i in range(500))
     long_explain = ("Let me explain my approach in detail. I considered several options "
                     "and decided to proceed as follows because of constraints. " * 30)
     msgs = []
@@ -269,7 +266,7 @@ def test_default_reduction():
     msgs.append({"role": "user", "content": "now finalize"})
     body = {"system": "You are a coding agent. " * 20, "tools": [], "messages": msgs}
     tin = _tok(body)
-    out, st = minify_request(copy.deepcopy(body), MinifyConfig())  # all defaults
+    out, st = minify_request(copy.deepcopy(body), MinifyConfig())
     tout = _tok(out)
     pct = 100 * (tin - tout) / tin
     print(f"  bloated payload: {tin} -> {tout} tok ({pct:.1f}% reduction)")
@@ -277,7 +274,7 @@ def test_default_reduction():
     check("no errors in default run", not st.errors, f"errors={st.errors}")
 
 
-# ── 10. lazy-mcp smoke (config-driven, empty = no-op) ─────────────────────────
+
 def test_lazy_mcp_smoke():
     with tempfile.TemporaryDirectory() as td:
         os.environ["SLIMTOKEN_LAZY_MCP_CONFIG"] = str(Path(td) / "none.json")
@@ -294,7 +291,7 @@ def test_lazy_mcp_smoke():
         check("lazy_mcp stub has real_tool", "real_tool" in stub["inputSchema"]["properties"])
 
 
-# ── 11. proxy e2e (local) ──────────────────────────────────────
+
 def test_proxy_e2e():
     received = {}
 
@@ -332,7 +329,7 @@ def test_proxy_e2e():
     env = dict(os.environ)
     env["SLIMTOKEN_PORT"] = "9211"
     env["SLIMTOKEN_UPSTREAM"] = "http://127.0.0.1:9210"
-    env["SLIMTOKEN_MINIFY_BUDGET"] = "0"  # don't drop our small payload
+    env["SLIMTOKEN_MINIFY_BUDGET"] = "0"
     env["PYTHONPATH"] = src_dir + ":" + env.get("PYTHONPATH", "")
     p = subprocess.Popen([sys.executable, "-c",
                          "from slimtoken.proxy import main; main()"],
@@ -382,28 +379,28 @@ def test_proxy_e2e():
 
 
 def test_tokencount_no_whole_serialize():
-    """tokencount must never json.dumps the whole body just to count tokens."""
+
     import inspect
     from slimtoken import tokencount
-    # count_obj walks the structure; it must not fall back to serializing the
-    # whole body. Inspect its OWN source (not the module's — the module uses
-    # jdumps in the fallback tokenizer path, but count_obj must not).
+
+
+
     csrc = inspect.getsource(tokencount.count_obj)
     check("tokencount has count_obj", hasattr(tokencount, "count_obj"))
     check("count_obj does not serialize whole body", "dumps" not in csrc)
     body = {"system": "x" * 500, "messages": [{"role": "user", "content": "y" * 200}]}
     a = tokencount.count_obj(body)
     check("count_obj returns positive int", isinstance(a, int) and a > 0)
-    # same body, same count (cache stable)
+
     b = tokencount.count_obj(body)
     check("count_obj stable across calls", a == b)
-    # estimate_tokens_obj is the drop-in and must equal count_obj for a dict
+
     check("estimate_tokens_obj matches count_obj",
           tokencount.estimate_tokens_obj(body) == a)
 
 
 def test_single_pass_equivalence():
-    """merged optimize_messages output is byte-identical to the staged path."""
+
     from slimtoken.pipeline import minify_request, MinifyConfig
     payload = {"system": "<cold_memory>\n\n\nkeep\n</cold_memory>\n\n\nMore.",
                "tools": [{"name": "Read", "description": "a" * 300,
@@ -420,13 +417,13 @@ def test_single_pass_equivalence():
     out1, _ = minify_request(copy.deepcopy(payload), cfg)
     out2, _ = minify_request(copy.deepcopy(payload), cfg)
     check("single-pass deterministic", json.dumps(out1, sort_keys=True) == json.dumps(out2, sort_keys=True))
-    # reduction actually happened
+
     from slimtoken.tokencount import count_obj
     check("single-pass reduces tokens", count_obj(out1) < count_obj(payload))
 
 
 def test_proxy_metrics_and_fastpath():
-    """async proxy: /metrics has latency buckets; fast-path forwards bytes unchanged."""
+
     received = {}
     class U(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -450,7 +447,7 @@ def test_proxy_metrics_and_fastpath():
     src_dir = str(Path(__file__).resolve().parent.parent / "src")
     LAUNCH = "from slimtoken.proxy import main; main()"
 
-    # proxy 1: minify ON -> /metrics must carry latency buckets + usage
+
     env = dict(os.environ); env.update({"SLIMTOKEN_PORT": "9311", "SLIMTOKEN_UPSTREAM": "http://127.0.0.1:9310", "SLIMTOKEN_MINIFY_BUDGET": "0", "PYTHONPATH": src_dir})
     p = subprocess.Popen([sys.executable, "-c", LAUNCH], env=env, stderr=subprocess.PIPE, cwd=src_dir)
     try:
@@ -482,7 +479,7 @@ def test_proxy_metrics_and_fastpath():
         try: p.wait(timeout=5)
         except Exception: p.kill()
 
-    # proxy 2: minify OFF -> fast-path must forward body bytes unchanged
+
     env2 = dict(env); env2["SLIMTOKEN_PORT"] = "9312"; env2["SLIMTOKEN_MINIFY"] = "0"
     p2 = subprocess.Popen([sys.executable, "-c", LAUNCH], env=env2, stderr=subprocess.PIPE, cwd=src_dir)
     try:
@@ -511,31 +508,31 @@ def test_proxy_metrics_and_fastpath():
 
 
 def test_tool_result_compress():
-    """type-specific compressors detect shapes, emit metadata, stay pair-safe."""
+
     from slimtoken.tool_result_compress import compress_text, compress_messages
-    # dir listing
+
     ls = "total 0\n" + "\n".join(f"drwxr-xr-x  2 user group 4096 Jan 1 12:00 dir{i}" for i in range(40))
     c = compress_text(ls)
     check("dir listing compressed", c is not None and "[slimtoken-compressed]" in c)
     check("dir listing has metadata", c is not None and "B -> " in c)
-    # json — pretty-printed nested structure (realistic tool-output shape)
+
     import json as _jj
     j = _jj.dumps({"items": [{"id": i, "name": f"thing_{i}", "tags": ["a", "b"]} for i in range(60)],
                    "meta": {"count": 60}}, indent=2)
     c = compress_text(j)
     check("json compressed", c is not None and c.startswith("[slimtoken-compressed]"))
-    # log
+
     log = "\n".join(f"2024-01-0{i%9+1} 12:00:0{i%9} INFO line {i} " + "z"*30 for i in range(60))
     c = compress_text(log)
     check("log compressed", c is not None and "log 60 lines" in c)
-    # source
+
     src = "\n".join(["def foo(a, b):", "    # comment", "    return a + b", "", "class Bar:", "    pass"] * 12)
     c = compress_text(src)
     check("source compressed", c is not None and "source:" in c)
-    # too short -> no compression
+
     check("short text not compressed", compress_text("hello world") is None)
 
-    # pair-safety: messages with tool_use + tool_result pairing preserved
+
     msgs = [
         {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"c": "ls"}}]},
         {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": ls}]},
@@ -544,42 +541,42 @@ def test_tool_result_compress():
     ]
     new, n = compress_messages(copy.deepcopy(msgs))
     check("compress reported 2 results", n == 2)
-    # tool_use blocks untouched
+
     check("tool_use blocks preserved", new[0]["content"][0]["name"] == "Bash")
-    # tool_result ids preserved
+
     check("tool_result id preserved", new[1]["content"][0]["tool_use_id"] == "t1")
     check("tool_result id preserved 2", new[3]["content"][0]["tool_use_id"] == "t2")
-    # message count unchanged (pair-safety: no removal/reorder)
+
     check("message count unchanged", len(new) == len(msgs))
-    # content was actually rewritten
+
     check("tool_result content rewritten", new[1]["content"][0]["content"] != msgs[1]["content"][0]["content"])
 
 
 def test_output_filter():
-    """raw passthrough when unset; max_tokens truncates; stop truncates."""
+
     from slimtoken.output_filter import OutputFilter
 
-    # 1. raw passthrough when all levers explicitly off (feed == input)
+
     f = OutputFilter(max_tokens=None, stops=[], filler=False)
     out = f.feed(b"event: x\ndata: {\"delta\":{\"text\":\"hello\"}}\n\n")
     check("raw passthrough all levers off", out == b"event: x\ndata: {\"delta\":{\"text\":\"hello\"}}\n\n")
 
-    # 2. max_tokens truncation: cap at ~3 tokens, stream more
-    # use a simple repeating word so tokens are countable
+
+
     f = OutputFilter(max_tokens=3, stops=[], filler=False)
     stream = b'event: m\ndata: {"type":"content_block_delta","delta":{"text":"apple banana cherry date elderberry"}}\n\n'
     out = f.feed(stream)
-    # the filter should emit a truncated text and then close
+
     check("max_tokens produced output", len(out) > 0)
     check("max_tokens filter closed", f._closed is True)
-    # the emitted text must be a prefix of the original (truncation, not garbage)
+
     import json as _j
-    # parse the emitted data line
+
     line = [l for l in out.decode().split("\n") if l.startswith("data:")][0]
     emitted_text = _j.loads(line[5:].strip())["delta"]["text"]
     check("max_tokens emitted prefix", "apple banana cherry date elderberry".startswith(emitted_text))
 
-    # 3. stop-sequence truncation: stop string itself NOT emitted
+
     f = OutputFilter(max_tokens=None, stops=["STOP"], filler=False)
     stream = b'event: m\ndata: {"delta":{"text":"before text STOP after text"}}\n\n'
     out = f.feed(stream)
@@ -590,54 +587,54 @@ def test_output_filter():
     check("stop emitted before-text only", emitted_text == "before text ")
     check("stop string not emitted", "STOP" not in emitted_text)
 
-    # 4. non-data frames pass through
+
     f = OutputFilter(max_tokens=2, stops=[], filler=False)
     out = f.feed(b": ping\n\n")
     check("non-data frame passes through", out == b": ping\n\n")
 
 
 def test_output_filter_filler():
-    """SLIMTOKEN_FILLER strips lead-in filler from the response head."""
+
     from slimtoken.output_filter import OutputFilter, from_env, is_active
 
     def frame(text):
         return ("data: " + json.dumps({"delta": {"text": text}}) + "\n\n").encode()
 
-    # 1. single chunk: all leading filler stripped, real content kept
+
     f = OutputFilter(filler=True)
     out = f.feed(frame("Sure!\nHere is the code:\nprint(1)"))
     check("filler single-chunk strips lead-in", b"print(1)" in out
           and b"Sure" not in out and b"Here is the code" not in out)
 
-    # 2. filler phrase split across chunks is still caught
+
     f = OutputFilter(filler=True)
     c1 = f.feed(frame("Sure"))
     c2 = f.feed(frame("!\nThe answer is 42"))
     check("filler split-chunk caught", b"42" in c2 and b"Sure" not in c1 + c2)
 
-    # 3. real content starting immediately passes through untouched
+
     f = OutputFilter(filler=True)
     out = f.feed(frame("The answer is 42"))
     check("filler real-content passthrough", b"The answer is 42" in out)
 
-    # 4. whole response is filler -> finish() flushes it verbatim
+
     f = OutputFilter(filler=True)
     c = f.feed(frame("Sure!"))
     fin = f.finish()
     check("filler whole-response flushed at finish", b"Sure" in fin)
 
-    # 5. filler composes with max_tokens
+
     f = OutputFilter(filler=True, max_tokens=1000)
     out = f.feed(frame("Sure!\nlong content here"))
     check("filler composes with max_tokens", b"long content" in out and b"Sure" not in out)
 
-    # 6. env wiring: filler is ON by default (no env needed)
+
     os.environ.pop("SLIMTOKEN_FILLER", None)
     check("filler active by default", is_active())
     ef = from_env()
     check("filler from_env builds on by default", ef is not None and ef.filler)
 
-    # 7. explicit disable: SLIMTOKEN_FILLER=0 turns it off
+
     os.environ["SLIMTOKEN_FILLER"] = "0"
     check("filler inactive when SLIMTOKEN_FILLER=0", not is_active())
     ef = from_env()
@@ -646,11 +643,11 @@ def test_output_filter_filler():
 
 
 def test_dom_stage():
-    """opt-in dom stage prunes large HTML tool_results; pair-safe."""
+
     from slimtoken.dom_pruner import prune_dom, clear_dom_cache
     from slimtoken.pipeline import MinifyConfig, minify_request
 
-    # 1. prune_dom strips script/nav/attrs
+
     h = ('<html><head><script>alert(1)</script></head>'
          '<body><nav>menu</nav><div class="x" id="y" data-z="w">hi</div>'
          '<footer>copy</footer></body></html>')
@@ -660,7 +657,7 @@ def test_dom_stage():
     check("dom strips attrs", "class=" not in p and "data-" not in p)
     check("dom keeps content", "hi" in p)
 
-    # 2. pipeline stage fires only when minify_dom=True and content is big HTML
+
     big_html = "<html><body>" + "<div>row</div>" * 2000 + "</body></html>"
     body = {"messages": [{"role": "user", "content": [
         {"type": "tool_result", "tool_use_id": "t1", "content": big_html}]}]}
@@ -672,11 +669,11 @@ def test_dom_stage():
     check("dom stage fires when enabled", stats.dom_minified == 1)
     check("dom stage pruned content", len(nb["messages"][0]["content"][0]["content"]) < len(big_html))
 
-    # 3. pair-safety: tool_use_id preserved, message count unchanged
+
     check("dom preserves tool_use_id", nb["messages"][0]["content"][0]["tool_use_id"] == "t1")
     check("dom preserves message count", len(nb["messages"]) == 1)
 
-    # 4. small / non-HTML tool_results untouched
+
     body2 = {"messages": [{"role": "user", "content": [
         {"type": "tool_result", "tool_use_id": "t2", "content": "short text"}]}]}
     nb2, stats2 = minify_request(copy.deepcopy(body2), cfg_on)
@@ -687,13 +684,13 @@ def test_dom_stage():
 
 
 def test_stats_persistence():
-    """SLIMTOKEN_STATS_FILE persists cumulative minify stats to disk."""
+
     from slimtoken import proxy as _proxy
 
     with tempfile.TemporaryDirectory() as td:
         stats_file = str(Path(td) / "minify_stats.json")
         os.environ["SLIMTOKEN_STATS_FILE"] = stats_file
-        # re-read the module-level file path (built at import)
+
         _proxy._MINIFY_STATS_FILE = stats_file
         _proxy._minify_stats = {
             "runs": 0, "tokens_in": 0, "tokens_out": 0, "tokens_saved": 0,
@@ -717,11 +714,11 @@ def test_stats_persistence():
             _proxy._MINIFY_STATS_FILE = None
 
 
-# ── adapters (OpenAI/Ollama ↔ Anthropic canonical) ───────────────────────────
+
 def test_adapters():
     from slimtoken import adapters
 
-    # detect() by URL path
+
     check("detect /v1/messages → anthropic",
           adapters.detect("https://api.x.com/v1/messages") == "anthropic")
     check("detect /v1/chat/completions → openai",
@@ -735,14 +732,14 @@ def test_adapters():
     check("detect strips query string",
           adapters.detect("/v1/messages?beta=true") == "anthropic")
 
-    # anthropic is identity (no conversion, no copy needed)
+
     body_anth = {"system": "s", "messages": [{"role": "user", "content": "hi"}]}
     check("anthropic to_canonical identity",
           adapters.to_canonical(body_anth, "anthropic") is body_anth)
     check("anthropic from_canonical identity",
           adapters.from_canonical(body_anth, "anthropic") is body_anth)
 
-    # OpenAI → canonical: system message hoisted, tool_calls → tool_use, role:tool → tool_result
+
     openai_body = {
         "model": "gpt-x", "max_tokens": 100, "stream": True,
         "messages": [
@@ -761,7 +758,7 @@ def test_adapters():
     check("openai→canon top-level system", canon.get("system") == "You are helpful.")
     check("openai→canon model carried", canon.get("model") == "gpt-x")
     check("openai→canon max_tokens carried", canon.get("max_tokens") == 100)
-    # messages: user, assistant w/ tool_use, user w/ tool_result
+
     roles = [m["role"] for m in canon["messages"]]
     check("openai→canon roles", roles == ["user", "assistant", "user"],
           f"{roles}")
@@ -777,7 +774,7 @@ def test_adapters():
     check("openai→canon tool input_schema",
           canon["tools"][0]["input_schema"]["properties"]["path"]["type"] == "string")
 
-    # canonical → OpenAI: reverse it
+
     back = adapters.from_canonical(canon, "openai")
     back_roles = [m["role"] for m in back["messages"]]
     check("canon→openai has system role", back_roles[0] == "system")
@@ -791,7 +788,7 @@ def test_adapters():
     check("canon→openai tool parameters restored",
           back["tools"][0]["function"]["parameters"]["properties"]["path"]["type"] == "string")
 
-    # ollama reuses openai conversion (same shape); passthrough of ollama-only fields
+
     ollama_body = {"model": "llama3", "messages": [{"role": "user", "content": "hi"}],
                    "options": {"temperature": 0.2}, "keep_alive": "5m", "format": "json"}
     canon_o = adapters.to_canonical(ollama_body, "ollama")
@@ -802,7 +799,7 @@ def test_adapters():
     check("ollama round-trip options survive", back_o.get("options") == {"temperature": 0.2})
     check("ollama round-trip keep_alive survives", back_o.get("keep_alive") == "5m")
 
-    # pair-safety across round trip: consecutive tool results merge into one user msg
+
     multi = {"messages": [
         {"role": "user", "content": "do both"},
         {"role": "assistant", "content": None, "tool_calls": [
@@ -812,28 +809,26 @@ def test_adapters():
         {"role": "tool", "tool_call_id": "b", "content": "r2"},
     ]}
     cm = adapters.to_canonical(multi, "openai")["messages"]
-    # one assistant w/ two tool_use, one user w/ two tool_result
+
     asst2 = [m for m in cm if m["role"] == "assistant"][0]
     check("pair-safety: two tool_use in one assistant",
           len([b for b in asst2["content"] if b.get("type") == "tool_use"]) == 2)
     usr2 = [m for m in cm if m["role"] == "user"][-1]
     check("pair-safety: two tool_result merged into one user",
           len([b for b in usr2["content"] if b.get("type") == "tool_result"]) == 2)
-    # reverse preserves both tool replies
+
     back2 = adapters.from_canonical({"messages": cm}, "openai")
     tool2 = [m for m in back2["messages"] if m["role"] == "tool"]
     check("pair-safety reverse: two role:tool restored", len(tool2) == 2)
 
 
-# ── Audit #1: old USER turns preserved by distillation ───────────────────────
+
 def test_distill_user_preserved():
-    """Audit #1: distillation must NOT rewrite old user messages by default.
-    The requirements/DB lines the audit reported missing survive verbatim;
-    only assistant prose is distilled. distill_include_user opts in."""
+
     req = ("Requirement 1: connect to the postgres DB.\n"
            "Requirement 2: run the migration on schema public.\n"
            "Requirement 3: keep all rows in the audit table.\n"
-           "Requirement 4: export results to csv.\n" * 20)  # long → distillable
+           "Requirement 4: export results to csv.\n" * 20)
     msgs = []
     for _i in range(5):
         msgs.append({"role": "user", "content": req})
@@ -841,7 +836,7 @@ def test_distill_user_preserved():
                      "content": "I will explain my approach in very great detail. " * 40})
     msgs.append({"role": "user", "content": "final"})
 
-    # 1. standalone default: assistant distilled, user requirements kept whole
+
     stats = {}
     out = distill_old_turns(copy.deepcopy(msgs), stats, keep_last=4, max_chars=160)
     user_full = sum(1 for m in out
@@ -853,7 +848,7 @@ def test_distill_user_preserved():
     check("audit1 default: old user requirements survive", user_full >= 4, f"user_full={user_full}")
     check("audit1 default: assistant prose distilled", asst_distilled >= 2, f"asst={asst_distilled}")
 
-    # 2. standalone opt-in include_user=True compresses user turns too
+
     stats2 = {}
     out2 = distill_old_turns(copy.deepcopy(msgs), stats2, keep_last=4, max_chars=160,
                              include_user=True)
@@ -862,7 +857,7 @@ def test_distill_user_preserved():
                          and "distilled" in m["content"])
     check("audit1 opt-in compresses user turns", user_distilled >= 2, f"{user_distilled}")
 
-    # 3. pipeline default: user requirements survive a real minify run
+
     body = {"system": "s", "messages": msgs}
     nb, _ = minify_request(copy.deepcopy(body), MinifyConfig(keep_last=4))
     user_req = sum(1 for m in nb["messages"]
@@ -870,7 +865,7 @@ def test_distill_user_preserved():
                    and "Requirement 4:" in m["content"])
     check("audit1 pipeline default: old user requirements survive", user_req >= 4, f"{user_req}")
 
-    # 4. pipeline opt-in compresses user turns
+
     body2 = {"system": "s", "messages": msgs}
     nb2, _ = minify_request(copy.deepcopy(body2), MinifyConfig(keep_last=4,
                                                                distill_include_user=True))
@@ -880,14 +875,13 @@ def test_distill_user_preserved():
     check("audit1 pipeline opt-in compresses user turns", user_dist2 >= 2, f"{user_dist2}")
 
 
-# ── Audit #2: critical JSON + source tail recall under compression ───────────
+
 def test_json_tail_recall():
-    """Audit #2: a critical record near the tail of a big JSON array must
-    survive compression — no blind ``compact[:4000]`` mid-record cut."""
+
     from slimtoken.tool_result_compress import compress_text
     import json as _jj
     records = [{"id": i, "payload": "x" * 80} for i in range(500)]
-    pretty = _jj.dumps(records, indent=2)  # far over the cap after compaction
+    pretty = _jj.dumps(records, indent=2)
     c = compress_text(pretty)
     check("audit2 json compressed", c is not None)
     body = c.split("json: ", 1)[1]
@@ -897,22 +891,21 @@ def test_json_tail_recall():
     check("audit2 json omission marker present", "omitted" in body)
     check("audit2 json not full dump", '"id":250' not in body)
 
-    # a JSON that's large enough to compress but whose compacted form fits the
-    # cap is emitted WHOLE — zero loss, no truncation, no omission marker
+
+
     mid = _jj.dumps([{"id": i, "k": "v"} for i in range(30)], indent=2)
     cm = compress_text(mid)
     check("audit2 mid json emitted whole", cm is not None
           and '"id":29' in cm and "omitted" not in cm)
 
-    # tiny JSON is under the compression floor — untouched, preserved verbatim
+
     tiny = _jj.dumps([{"id": 1}, {"id": 2}], indent=2)
     ct = compress_text(tiny)
     check("audit2 tiny json untouched (zero loss)", ct is None)
 
 
 def test_source_tail_recall():
-    """Audit #2: the tail of a source dump (a critical function near the end)
-    survives compression instead of being truncated away."""
+
     from slimtoken.tool_result_compress import compress_text
     lines = []
     for i in range(200):
@@ -927,10 +920,9 @@ def test_source_tail_recall():
     check("audit2 source not full dump", "func_100" not in c)
 
 
-# ── Audit #3: OpenAI multimodal + SSE delta.content ──────────────────────────
+
 def test_openai_multimodal_roundtrip():
-    """Audit #3: image/audio (non-text) blocks survive the OpenAI ↔ canonical
-    round trip instead of being dropped."""
+
     from slimtoken import adapters
     body = {"messages": [
         {"role": "user", "content": [
@@ -952,11 +944,10 @@ def test_openai_multimodal_roundtrip():
 
 
 def test_output_filter_openai_delta():
-    """Audit #3: the output filter handles OpenAI streaming — delta.content as
-    a string AND as a list of text blocks (not just Anthropic delta.text)."""
+
     from slimtoken.output_filter import OutputFilter
 
-    # 1. OpenAI string delta.content, max_tokens cap
+
     f = OutputFilter(max_tokens=3, stops=[], filler=False)
     frame = ('data: ' + json.dumps(
         {"choices": [{"delta": {"content": "apple banana cherry date"}}]}) + '\n\n').encode()
@@ -970,7 +961,7 @@ def test_output_filter_openai_delta():
           and len(content) < len("apple banana cherry date"))
     check("audit3 openai string filter closed", f._closed)
 
-    # 2. OpenAI list delta.content, stop sequence
+
     f = OutputFilter(max_tokens=None, stops=["STOP"], filler=False)
     frame = ('data: ' + json.dumps({"choices": [{"delta": {"content": [
                 {"type": "text", "text": "keep me"},
@@ -983,7 +974,7 @@ def test_output_filter_openai_delta():
     check("audit3 openai block-list stop truncates", "STOP" not in texts and "keep me" in texts)
     check("audit3 openai block-list stop closes", f._closed)
 
-    # 3. non-text delta (tool_calls / reasoning) passes through untouched
+
     f = OutputFilter(filler=True)
     frame = ('data: ' + json.dumps({"choices": [{"delta": {
         "tool_calls": [{"id": "t", "type": "function",
@@ -992,10 +983,9 @@ def test_output_filter_openai_delta():
     check("audit3 openai non-text delta passthrough", out == frame)
 
 
-# ── Audit #4: uninstall must not duplicate ANTHROPIC_BASE_URL ────────────────
+
 def test_uninstall_no_duplicate():
-    """Audit #4: uninstall must NOT append a second ANTHROPIC_BASE_URL when a
-    pre-existing unmarked line already survives next to the marker block."""
+
     import importlib
     cli = importlib.import_module("slimtoken.cli")
     with tempfile.TemporaryDirectory() as td:
@@ -1018,7 +1008,7 @@ def test_uninstall_no_duplicate():
               "ANTHROPIC_BASE_URL=http://127.0.0.1:9000" in text)
 
 
-# ── context_presets (high-context VRAM tiers, dense + MoE) ───────────────────
+
 def test_context_presets():
     from slimtoken import context_presets as cp
 
@@ -1042,18 +1032,18 @@ def test_context_presets():
         check(f"{tid} has llama_cmd", isinstance(r["llama_cmd"], str) and "llama-server" in r["llama_cmd"])
         check(f"{tid} ub present", isinstance(r["ub"], int) and r["ub"] > 0)
 
-    # 16GB MoE is capped at 128k (the proven-stable value), not the 256k high side
+
     moe16 = [r for r in rows if r["vram_gb"] == 16 and r["kind"] == "MoE"][0]
     check("16GB MoE capped at 128k", moe16["nominal_ctx"] == 131072,
           f"{moe16['nominal_ctx']}")
     check("16GB MoE is Qwen3.6-35B-A3B", moe16["model"] == "Qwen3.6-35B-A3B")
 
-    # vram filter
+
     only8 = cp.list_context_presets(8)
     check("vram filter 8 returns only 8GB", all(r["vram_gb"] == 8 for r in only8)
           and len(only8) >= 2)
 
-    # best_context_for_tier returns the max effective
+
     best16 = cp.best_context_for_tier(16)
     all16 = cp.list_context_presets(16)
     check("best_context_for_tier picks max effective",

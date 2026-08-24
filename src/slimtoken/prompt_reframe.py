@@ -1,68 +1,4 @@
-"""prompt_reframe — generic CPU-only prompt rewriter.
 
-A small, self-contained toolkit for tightening natural-language prompts before
-they reach a model. All stages are pure CPU (no LLM roundtrip), deterministic,
-and safe to run anywhere: a script, a CLI, an MCP server, or a web service.
-
-Stages (each one independently callable):
-
-    classify_domain(prompt)
-        Keyword match into one of: business, professional, osint,
-        cybersecurity, code, general. Stable classification; falls back
-        to 'general' if nothing matches.
-
-    reframe_prompt(prompt)
-        Strip conversational filler ("can you basically just tell me…"),
-        drop fragment patterns ("...", "the the"), dedupe sentences
-        (case-insensitive), normalize whitespace, capitalize the first
-        letter, ensure terminal punctuation. Lossless on intent — every
-        claim survives; only filler and duplicates are removed.
-
-    shrink_prompt(prompt, max_tokens=80, mode='balanced')
-        Sentence-prune to a word budget. ALWAYS keeps the first sentence (the
-        core ask) plus any imperative / constraint sentences, then fills the
-        rest of the budget from the highest-scoring remaining sentences and
-        re-emits in original order. Modes:
-          - 'aggressive' ≈ 20 words (~ caveman)
-          - 'balanced'   ≈ 50 words (~ tight business prose)
-          - 'preserve'   ≈ 150 words (~ light cleanup)
-        NOTE: shrink is LOSSY by design — for prompts that fit, it drops
-        lower-priority sentences. It is best for single-ask prompts. For
-        prompts with multiple INDEPENDENT constraints, prefer reframe_prompt
-        / minify_prompt (lossless) or pass a large max_tokens; shrinking can
-        drop a constraint sentence once the budget runs out.
-
-    minify_prompt(prompt)
-        Character-level squeeze: collapse whitespace, drop redundant
-        punctuation runs. Pure cosmetic.
-
-    build_system(domain, role='generalist', style='terse', rules=())
-        Compose a tight system prompt from a small, fixed schema.
-        Intentionally short — a few declarative sentences that don't
-        waste the model's context window.
-
-The module is dependency-free (Python 3.10+ stdlib only). It does not
-import any model client, agent runtime, or upstream SDK. If you ship a
-product that embeds a rewriter, this is the layer that should live in
-the model-agnostic core.
-
-Why split this out from the rest of slimtoken? The proxy already minifies
-the *request body* (tools, system, messages, dedup, distill). This module
-rewrites the *natural-language intent* of a single user prompt — a
-different problem, used at a different point in the pipeline. Keeping
-them separate lets you compose them: proxy-minify a long multi-turn
-request, then reframe each new user prompt as it arrives.
-
-Usage:
-    from slimtoken.prompt_reframe import (
-        classify_domain, reframe_prompt, shrink_prompt,
-        minify_prompt, build_system,
-    )
-
-    domain = classify_domain("quarterly revenue forecast vs plan")
-    tight  = shrink_prompt(raw_user_msg, mode='balanced')
-    system = build_system(domain, role='generalist', style='terse')
-"""
 from __future__ import annotations
 
 import re
@@ -78,7 +14,7 @@ __all__ = [
 ]
 
 
-# ── Domain Classification ──────────────────────────────────────────────────
+
 DOMAIN_KEYWORDS: Dict[str, Tuple[str, ...]] = {
     "cybersecurity": (
         "security", "malware", "virus", "trojan", "ransomware", "phishing",
@@ -110,12 +46,7 @@ DOMAIN_KEYWORDS: Dict[str, Tuple[str, ...]] = {
 
 
 def classify_domain(prompt: str) -> str:
-    """Keyword match into a domain. Stable; falls back to 'general'.
 
-    The score per domain is the count of its keywords that appear
-    (case-insensitive substring) in the prompt. Ties resolve by the
-    order the domains are defined in :data:`DOMAIN_KEYWORDS`.
-    """
     if not prompt:
         return "general"
     lower = prompt.lower()
@@ -133,7 +64,7 @@ def classify_domain(prompt: str) -> str:
     return "general"
 
 
-# ── Filler / Stopword Sets ─────────────────────────────────────────────────
+
 _FILLER_PHRASES: Tuple[str, ...] = (
     "i want to know", "i want", "i'd like", "i would like",
     "can you tell me", "can you", "could you",
@@ -152,38 +83,32 @@ _FILLER_PHRASES: Tuple[str, ...] = (
 )
 
 _FRAGMENT_PATTERNS: Tuple[str, ...] = (
-    r"\.{3,}",            # "..." "...."
-    r"\b(\w+)\s+\1\b",    # "the the"
-    r"\s+,",              # " ,"
-    r",\s*,",             # ", ,"
-    r"\s+\.",             # " ."
+    r"\.{3,}",
+    r"\b(\w+)\s+\1\b",
+    r"\s+,",
+    r",\s*,",
+    r"\s+\.",
     r"\?{2,}", r"!{2,}",
 )
 
 
-# ── Stage: reframe (strip filler + dedupe + normalize) ─────────────────────
-def reframe_prompt(prompt: str) -> str:
-    """Strip filler, drop fragments, dedupe sentences, normalize whitespace.
 
-    The transform is *lossless on actionable content* — every factual
-    claim survives; only the conversational scaffolding is removed.
-    Use it whenever a prompt has too many pleasantries, false starts,
-    or repeated lines.
-    """
+def reframe_prompt(prompt: str) -> str:
+
     if not prompt:
         return prompt
     s = prompt
 
-    # 1. Drop filler phrases (case-insensitive, word-boundary aware)
+
     for phrase in _FILLER_PHRASES:
         s = re.sub(r"\b" + re.escape(phrase) + r"\b", "", s,
                    flags=re.IGNORECASE)
 
-    # 2. Drop fragment patterns
+
     for pat in _FRAGMENT_PATTERNS:
         s = re.sub(pat, " ", s)
 
-    # 3. Split into sentences, dedupe (case-insensitive, punctuation-normalized)
+
     raw_sents = re.split(r"(?<=[.!?])\s+|\n+", s)
     seen: set = set()
     kept: List[str] = []
@@ -197,11 +122,11 @@ def reframe_prompt(prompt: str) -> str:
         seen.add(norm)
         kept.append(sent.strip())
 
-    # 4. Re-join, normalize whitespace
+
     out = " ".join(kept)
     out = re.sub(r"\s+", " ", out).strip()
 
-    # 5. Capitalize first letter, ensure terminal punctuation
+
     if out and out[0].islower():
         out = out[0].upper() + out[1:]
     if out and out[-1] not in ".!?":
@@ -209,7 +134,7 @@ def reframe_prompt(prompt: str) -> str:
     return out
 
 
-# ── Stage: shrink (TextRank-lite sentence rank) ────────────────────────────
+
 _WORD_RE = re.compile(r"[a-z0-9]+")
 _SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 
@@ -219,21 +144,15 @@ def _split_sentences(text: str) -> List[str]:
 
 
 def _rank_score(sent: str, query_words: set) -> int:
-    """TextRank-lite: words shared with the prompt + sentence length.
 
-    Deterministic CPU ranking. The output is built from sentences that already
-    appear in the input (the user's own words) — but shrink is still LOSSY:
-    sentences below the budget line are dropped, so "intent preserved" is only
-    guaranteed for the sentences that survive, never for the whole prompt.
-    """
     words = _WORD_RE.findall(sent.lower())
     overlap = sum(2 for w in words if w in query_words)
     return overlap + len(words)
 
 
-# Sentences that read as commands or carry a hard constraint. These are the
-# parts a shrinking must NOT drop: the audit's exact complaint was that shrink
-# loses independent constraints. We keep them before any scored filler.
+
+
+
 _IMPERATIVE_PREFIXES = (
     "plan", "check", "scan", "audit", "verify", "ensure", "make", "create",
     "write", "build", "add", "fix", "update", "change", "remove", "delete",
@@ -251,7 +170,7 @@ _CONSTRAINT_MARKERS = (
 
 
 def _is_imperative_or_constraint(sent: str) -> bool:
-    """True if a sentence leads with a command verb or carries a hard constraint."""
+
     low = sent.lower().strip()
     if any(low.startswith(p) for p in _IMPERATIVE_PREFIXES):
         return True
@@ -267,39 +186,13 @@ shrink_modes: Dict[str, int] = {
 
 def shrink_prompt(prompt: str, max_tokens: Optional[int] = None,
                   mode: str = "balanced") -> str:
-    """Prune to a word budget, protecting the core ask and any constraints.
 
-    Selection order (all emitted back in original order):
-      1. If the whole (reframed) prompt already fits the budget, return it
-         UNCHANGED — lossless short-circuit for multi-constraint prompts that
-         fit.
-      2. The FIRST sentence is always kept — it carries the core ask.
-      3. Imperative / constraint sentences (commands, "must/ensure/do not…")
-         are kept next, before any scored filler.
-      4. Remaining budget is filled from the highest-scoring sentences.
-
-    Shrink is still LOSSY once the budget runs out: lower-priority sentences
-    are dropped. That is by design and it is why the module doc warns against
-    shrinking prompts with many independent constraints into a tiny budget.
-
-    Args:
-        prompt: the input prompt.
-        max_tokens: target word budget. If ``None`` (default), it is
-            resolved from ``mode`` — 'aggressive' (~20), 'balanced'
-            (~50), 'preserve' (~150). Pass an explicit int to override.
-        mode: budget mode; used only when ``max_tokens`` is ``None``.
-
-    Returns:
-        A shorter prompt made from sentences that already exist in the
-        input — no LLM, no hallucinated details. The lead instruction and any
-        imperative/constraint sentences survive whenever they fit the budget.
-    """
     if not prompt:
         return prompt
     if max_tokens is None or max_tokens <= 0:
         max_tokens = shrink_modes.get(mode, 50)
 
-    # First-pass reframe (cheap; frequently already short-circuits the work)
+
     candidates = _split_sentences(reframe_prompt(prompt))
     if not candidates:
         candidates = _split_sentences(prompt)
@@ -308,8 +201,8 @@ def shrink_prompt(prompt: str, max_tokens: Optional[int] = None,
     if len(candidates) == 1:
         return candidates[0]
 
-    # Lossless short-circuit: the cleaned prompt already fits — keep every
-    # sentence. Multiple independent constraints survive intact.
+
+
     if sum(len(s.split()) for s in candidates) <= max_tokens:
         out = " ".join(candidates).strip()
         return (out if out[-1] in ".!?" else out + ".") or prompt
@@ -317,13 +210,13 @@ def shrink_prompt(prompt: str, max_tokens: Optional[int] = None,
     query_words = {w for w in _WORD_RE.findall(prompt.lower()) if len(w) > 3}
     order = {id(s): i for i, s in enumerate(candidates)}
 
-    # 1. The core ask — never dropped, even if it alone overflows the budget.
+
     first = candidates[0]
     kept = [first]
     word_count = len(first.split())
     rest = candidates[1:]
 
-    # 2. Imperative / constraint sentences before any scored filler.
+
     imperative = [s for s in rest if _is_imperative_or_constraint(s)]
     imp_ids = {id(s) for s in imperative}
     for s in imperative:
@@ -333,7 +226,7 @@ def shrink_prompt(prompt: str, max_tokens: Optional[int] = None,
         kept.append(s)
         word_count += sw
 
-    # 3. Fill remaining budget from highest-scoring remaining sentences.
+
     scored = [(i, _rank_score(s, query_words), s)
               for i, s in enumerate(rest) if id(s) not in imp_ids]
     scored.sort(key=lambda r: (-r[1], r[0]))
@@ -344,7 +237,7 @@ def shrink_prompt(prompt: str, max_tokens: Optional[int] = None,
         kept.append(sent)
         word_count += sw
 
-    # Re-emit kept sentences in original document order so the prose flows.
+
     kept.sort(key=lambda s: order.get(id(s), 0))
     out = " ".join(kept).strip()
     if out and out[-1] not in ".!?":
@@ -352,9 +245,9 @@ def shrink_prompt(prompt: str, max_tokens: Optional[int] = None,
     return out or prompt
 
 
-# ── Stage: minify (character-level squeeze) ────────────────────────────────
+
 def minify_prompt(prompt: str) -> str:
-    """Collapse whitespace + drop redundant punctuation runs. Cosmetic."""
+
     if not prompt:
         return prompt
     s = re.sub(r"\s+", " ", prompt).strip()
@@ -362,7 +255,7 @@ def minify_prompt(prompt: str) -> str:
     return s
 
 
-# ── Stage: build_system (tight declarative system prompt) ──────────────────
+
 _DOMAIN_HINTS: Dict[str, str] = {
     "business":       "Structured. Metrics → trends → recommendation → risk. No hype.",
     "professional":   "Numbered. Evidence → analysis → next step.",
@@ -376,22 +269,7 @@ _DOMAIN_HINTS: Dict[str, str] = {
 def build_system(domain: str, role: str = "generalist",
                  style: str = "terse",
                  rules: Optional[Tuple[str, ...]] = None) -> str:
-    """Compose a tight system prompt from a small, fixed schema.
 
-    Intentionally short — every clause pulls its weight, nothing decorative.
-    Defaults match what business and developer users tend to prefer; pass
-    a custom ``rules`` tuple to override.
-
-    Args:
-        domain: result of :func:`classify_domain` (or any custom label).
-        role: short role label, e.g. 'generalist', 'planner', 'auditor'.
-        style: short style label, e.g. 'terse', 'numbered', 'evidence'.
-        rules: optional tuple of explicit rules; first 6 are included.
-
-    Returns:
-        A single-line system prompt suitable for the ``system`` field of a
-        chat-completions or Anthropic ``messages`` request.
-    """
     hint = _DOMAIN_HINTS.get(domain, _DOMAIN_HINTS["general"])
     parts = [
         f"Role: {role}.",
@@ -406,7 +284,7 @@ def build_system(domain: str, role: str = "generalist",
     return " ".join(parts)
 
 
-# ── Convenience: full pipeline as one call ─────────────────────────────────
+
 def frame_prompt(prompt: str, *, system_prompt: str = "",
                  max_tokens: Optional[int] = None,
                  mode: str = "balanced",
@@ -414,17 +292,7 @@ def frame_prompt(prompt: str, *, system_prompt: str = "",
                  style: str = "terse",
                  rules: Optional[Tuple[str, ...]] = None
                  ) -> Tuple[str, str, str]:
-    """Run the full generic pipeline on a single prompt.
 
-    Stages: classify → reframe → shrink → minify → build_system.
-
-    Returns ``(reframed_prompt, system_prompt, domain)``. ``system_prompt``
-    is the composed system if ``system_prompt`` arg was empty; otherwise
-    it is ``<user-provided>\\n\\n<composed>`` so the model's existing
-    instructions stay in force.
-
-    No LLM calls; deterministic.
-    """
     if not prompt:
         return prompt, system_prompt, "general"
 
@@ -444,7 +312,7 @@ def frame_prompt(prompt: str, *, system_prompt: str = "",
     return tight, final_system, domain
 
 
-# ── CLI ─────────────────────────────────────────────────────────────────────
+
 def _cli(argv: List[str]) -> int:  # pragma: no cover
     import json
     import sys

@@ -1,29 +1,4 @@
-"""adapters — bidirectional conversion between OpenAI/Ollama chat format and the
-Anthropic canonical form slimtoken's pipeline operates on.
 
-The minify pipeline (:func:`slimtoken.pipeline.minify_request`) is built around
-Anthropic's request shape: a top-level ``system`` string, ``messages`` whose
-``content`` may be a list of typed blocks (``text`` / ``tool_use`` /
-``tool_result``), and ``tools`` with ``input_schema``. OpenAI and Ollama use a
-different shape: system is a ``role:"system"`` message, tool calls live in
-``assistant.tool_calls``, tool results are separate ``role:"tool"`` messages,
-and tools carry ``function.parameters``.
-
-This module is a **thin shim around the frozen pipeline**. It converts an
-OpenAI/Ollama body to canonical Anthropic form, the pipeline minifies it, then
-it converts back. No optimization logic is reimplemented; the Anthropic path is
-identity (zero work). ``ollama`` reuses the OpenAI conversion — their
-``messages`` / ``tools`` structures match; only the endpoint differs.
-
-Pair-safety is preserved across the round trip: an OpenAI ``assistant.tool_calls``
-plus its following ``role:"tool"`` replies become an Anthropic
-``tool_use`` block plus ``tool_result`` blocks; the pipeline drops such pairs
-together, so the reverse conversion never orphans a tool result from its call.
-
-Limitations: image / audio content blocks pass through best-effort (the proxy
-does not minify them); the common text + tools case — what the pipeline targets
-— converts losslessly.
-"""
 from __future__ import annotations
 
 import json
@@ -33,12 +8,12 @@ CANONICAL = "anthropic"
 OPENAI = "openai"
 OLLAMA = "ollama"
 
-# fields we rebuild during conversion (never carried through as-is)
+
 _REBUILD = {"messages", "tools", "system"}
 
 
 def detect(path: str) -> Optional[str]:
-    """Infer the request format from the URL path. None if unknown."""
+
     p = path.split("?", 1)[0].rstrip("/")
     if p.endswith("/v1/messages"):
         return CANONICAL
@@ -49,9 +24,9 @@ def detect(path: str) -> Optional[str]:
     return None
 
 
-# ── helpers ────────────────────────────────────────────────────────────────────
+
 def _flatten_text(content: Any) -> str:
-    """Coerce an OpenAI content field (string or list of {type:text,text}) to a string."""
+
     if content is None:
         return ""
     if isinstance(content, str):
@@ -68,7 +43,7 @@ def _flatten_text(content: Any) -> str:
 
 
 def _parse_args(args: Any) -> Any:
-    """OpenAI tool_calls.function.arguments is a JSON string; Anthropic input is a dict."""
+
     if isinstance(args, str):
         try:
             return json.loads(args)
@@ -77,7 +52,7 @@ def _parse_args(args: Any) -> Any:
     return args if isinstance(args, dict) else {}
 
 
-# ── OpenAI/Ollama → Anthropic canonical ─────────────────────────────────────────
+
 def _openai_tool_to_anthropic(t: dict) -> dict:
     fn = t.get("function", {}) if isinstance(t, dict) else {}
     return {
@@ -88,12 +63,7 @@ def _openai_tool_to_anthropic(t: dict) -> dict:
 
 
 def to_canonical(body: dict, fmt: str) -> dict:
-    """Normalize an OpenAI/Ollama request body to Anthropic canonical form.
 
-    ``anthropic`` is identity. Carries through every non-message/tool/system field
-    (``model``, ``max_tokens``, ``temperature``, ``stream``, Ollama ``options`` /
-    ``format`` / ``keep_alive``, …) untouched so they survive the round trip.
-    """
     if fmt == CANONICAL or not isinstance(body, dict):
         return body
     out = {k: v for k, v in body.items() if k not in _REBUILD}
@@ -151,10 +121,10 @@ def to_canonical(body: dict, fmt: str) -> dict:
 
         if role == "user":
             if isinstance(content, list):
-                # Keep text blocks AND any non-text (image / audio / file)
-                # blocks verbatim — never drop multimodal input. The pipeline
-                # only minifies text/tool blocks, so non-text blocks pass
-                # through the canonical form untouched and survive the round trip.
+
+
+
+
                 texts, extras = [], []
                 for b in content:
                     if not isinstance(b, dict):
@@ -175,7 +145,7 @@ def to_canonical(body: dict, fmt: str) -> dict:
                 canon_msgs.append({"role": "user", "content": _flatten_text(content)})
             continue
 
-        # unknown role: pass through verbatim (best effort)
+
         canon_msgs.append(m)
 
     _flush_results()
@@ -190,7 +160,7 @@ def to_canonical(body: dict, fmt: str) -> dict:
     return out
 
 
-# ── Anthropic canonical → OpenAI/Ollama ────────────────────────────────────────
+
 def _anthropic_tool_to_openai(t: dict) -> dict:
     return {
         "type": "function",
@@ -203,11 +173,7 @@ def _anthropic_tool_to_openai(t: dict) -> dict:
 
 
 def from_canonical(body: dict, fmt: str) -> dict:
-    """Denormalize an Anthropic canonical body back to OpenAI/Ollama form.
 
-    ``anthropic`` is identity. Rebuilds system messages, assistant ``tool_calls``,
-    and ``role:"tool"`` result messages; carries every other field through.
-    """
     if fmt == CANONICAL or not isinstance(body, dict):
         return body
     out = {k: v for k, v in body.items() if k not in _REBUILD}
@@ -249,11 +215,11 @@ def from_canonical(body: dict, fmt: str) -> dict:
                     elif b.get("type") in (None, "text") or "text" in b:
                         text_parts.append(b.get("text", ""))
                     else:
-                        # non-text blocks (image / audio / file) pass through verbatim
+
                         extras.append(b)
                 msgs_out.extend(tool_results)
                 if extras:
-                    # user message stays a block list so multimodal content survives
+
                     blocks = ([{"type": "text", "text": "".join(text_parts)}]
                               if text_parts else [])
                     blocks.extend(extras)
@@ -302,5 +268,5 @@ def from_canonical(body: dict, fmt: str) -> dict:
 
 
 def roundtrip(body: dict, fmt: str) -> dict:
-    """to_canonical → from_canonical. For testing / inspection."""
+
     return from_canonical(to_canonical(body, fmt), fmt) if fmt != CANONICAL else body

@@ -1,22 +1,4 @@
-"""server — stdio MCP server exposing slimtoken's pipeline as tools.
 
-Speaks the MCP JSON-RPC 2.0 protocol over stdio (the transport every MCP client
-uses for local tools). The wire format mirrors the proven handshake in
-:mod:`slimtoken.lazy_mcp` (initialize -> tools/list -> tools/call). stdio is
-the default and only transport in this cut.
-
-This server does NO optimization itself. It dispatches tool calls to
-:mod:`slimtoken.mcp_server.tools`, which imports and calls the existing
-pipeline / token-count / prune / compress / budget functions. The proxy and the
-MCP server are independent processes that share the same core library.
-
-Usage:
-  slimtoken-mcp                       # stdio MCP server (for MCP clients)
-  python -m slimtoken.mcp_server      # same, no install needed
-
-The server is self-contained (stdlib only) so it runs wherever slimtoken is
-installed, with no extra deps beyond slimtoken's existing ones.
-"""
 from __future__ import annotations
 
 import json
@@ -56,7 +38,7 @@ def _error(id_: Any, code: int, message: str) -> None:
 
 
 def _handle(req: Dict[str, Any]) -> bool:
-    """Process one JSON-RPC request. Returns False to stop the loop."""
+
     method = req.get("method")
     id_ = req.get("id")
     params = req.get("params", {}) or {}
@@ -84,7 +66,7 @@ def _handle(req: Dict[str, Any]) -> bool:
         except Exception as e:
             _result(id_, tools.to_error(f"{type(e).__name__}: {e}"))
         return True
-    # ping / unknown
+
     if method == "ping":
         _result(id_, {})
         return True
@@ -94,7 +76,7 @@ def _handle(req: Dict[str, Any]) -> bool:
 
 
 def run_stdio() -> int:
-    """Main stdio loop. Reads newline-delimited JSON-RPC until EOF."""
+
     while True:
         req = _read()
         if req is None:
@@ -102,7 +84,7 @@ def run_stdio() -> int:
         try:
             stop = _handle(req)
         except Exception as e:
-            # never let one bad request kill the server
+
             _send({"jsonrpc": "2.0", "id": req.get("id"),
                    "error": {"code": -32603, "message": f"internal error: {e}"}})
             stop = True

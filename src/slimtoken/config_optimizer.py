@@ -1,13 +1,4 @@
-"""config_optimizer — recommend llama-server args for a GPU + model.
 
-Generalizes the manual tuning done for the Qwen3.6-35B MoE on a 16 GB card
-(ctx=100k, ub=1024 fits ~14.6 GB). Given the GPU's total VRAM and a model
-file (or its size in GB), estimate weights VRAM, KV cache, and the compute
-buffer, then recommend --ctx, -ub, -ctk/-ctv, -fa, -ngl, --kv-offload.
-
-Outputs a ready-to-paste llama-server invocation plus CORTEXAGENT_* env exports
-(so it's useful to CortexAgent users too) and an SLIMTOKEN_* summary.
-"""
 from __future__ import annotations
 
 import re
@@ -18,7 +9,7 @@ from typing import Optional
 
 
 def detect_vram_gb() -> Optional[float]:
-    """Auto-detect total GPU VRAM in GB via nvidia-smi. None on failure."""
+
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
@@ -45,7 +36,7 @@ class Recommendation:
     kv_offload: int = 1
     np: int = 1
     b: int = 2048
-    kv_per_token_bytes: int = 5120   # ~5 KB/token (hybrid MoE q4_0); dense ~8 KB
+    kv_per_token_bytes: int = 5120
     est_total_gb: float = 0.0
     margin_gb: float = 0.0
     notes: list = field(default_factory=list)
@@ -90,21 +81,21 @@ def recommend(vram_gb: Optional[float] = None,
               kv_per_token_bytes: int = 5120,
               native_ctx: int = 262144,
               keep_free_gb: float = 1.0) -> Recommendation:
-    """Compute a Recommendation. Weights VRAM ≈ gguf file size * loading factor (all GPU)."""
+
     if vram_gb is None:
         vram_gb = detect_vram_gb()
         if vram_gb is None:
             raise ValueError("could not auto-detect VRAM; pass --vram-gb N")
-    # A loaded gguf consumes slightly MORE VRAM than its file size (dequant/
-    # eval tables, CUDA context). ~1.05 is a conservative factor calibrated
-    # against a 12.74 GB IQ3_S file that occupies ~13.2 GB once loaded.
+
+
+
     weights = _model_size_gb(model_path, model_size_gb) * 1.05
-    # Budget: total - weights - CUDA context floor - safety keep-free.
-    floor = 0.4 + keep_free_gb  # ~0.4 GB per-process CUDA context + headroom
+
+    floor = 0.4 + keep_free_gb
     free_for_kv_and_buf = vram_gb - weights - floor
     notes = []
     if free_for_kv_and_buf <= 0:
-        # Model alone doesn't fit; recommend max offload + min everything.
+
         notes.append("WARNING: weights exceed VRAM — recommend a smaller quant "
                      "or partial GPU offload (-ngl <n).")
         return Recommendation(vram_gb=vram_gb, model_path=model_path or "",
@@ -113,11 +104,11 @@ def recommend(vram_gb: Optional[float] = None,
                               margin_gb=0.0, notes=notes,
                               kv_per_token_bytes=kv_per_token_bytes)
 
-    # KV cache size at a candidate ctx: ctx * kv_per_token_bytes / 1024**3 GB.
-    # The --kv-unified compute buffer scales ~linearly with ubatch (NOT ctx):
-    #   measured 0.43 GB @ ub=512, 1.72 GB @ ub=2048  ->  buf = ub * 0.00084 GB
-    # Pick the largest ctx in [16k, 32k, 64k, 100k, 128k, 200k, 256k] that fits
-    # with ub=1024, falling back to ub=512. (ub=256 is too slow to prefer.)
+
+
+
+
+
     BUF_GB_PER_UB = 0.00084
     candidates = [16384, 32768, 65536, 100000, 131072, 200000, 262144]
     candidates = [c for c in candidates if c <= native_ctx]
@@ -130,7 +121,7 @@ def recommend(vram_gb: Optional[float] = None,
                 chosen_ctx, chosen_ub = ctx, ub
                 notes.append(f"ctx={ctx} ub={ub}: KV={kv_gb:.2f}GB "
                              f"buf={buf_gb:.2f}GB fits in {free_for_kv_and_buf:.2f}GB free")
-                # take the largest ctx at the largest ub that fits
+
                 break
         if chosen_ctx == ctx:
             break

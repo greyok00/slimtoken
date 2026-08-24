@@ -1,18 +1,4 @@
-"""proxy — the drop-in async HTTP(S) optimization proxy.
 
-Point ANTHROPIC_BASE_URL at this proxy (default 127.0.0.1:8181). Per request it:
-  1. reads the request (async; body buffered once — only the response streams)
-  2. fast-paths small / unoptimized requests as raw bytes (no JSON parse)
-  3. otherwise parses, strips `grammar`, runs the minify pipeline, re-serializes
-  4. forwards to the upstream via a shared, keep-alive httpx.AsyncClient
-  5. streams the response back as RAW bytes (no per-chunk parse), tracking only
-     the final usage event for /metrics
-  6. records t0..t4 latency timestamps separating proxy work from model generation
-
-Pipeline (minify_request) stays pure sync CPU — called inline (~3 ms; fine on
-the event loop at LLM-proxy concurrency). The transport is fully async with
-connection reuse, so concurrent requests don't serialize on upstream connects.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -32,19 +18,19 @@ from ._deps import jloads, jdumps
 from . import adapters
 from . import __version__
 
-# ── latency / token metrics ──────────────────────────────────────────────────
-# Single-threaded asyncio — no lock needed for dict updates.
+
+
 _metrics: Dict = {
     "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
     "requests": 0, "total_time_s": 0.0, "started_at": datetime.now().isoformat(),
     "current_tok_s": 0.0, "avg_tok_s": 0.0,
-    # latency buckets (seconds), accumulated per request
+
     "latency": {
-        "proxy_ingress": 0.0,    # t1-t0  read request
-        "optimize": 0.0,         # t2-t1  parse + minify
-        "ttft": 0.0,             # t3-t2  forward -> first output token
-        "generation": 0.0,       # t4-t3  first -> final token
-        "total": 0.0,            # t4-t0
+        "proxy_ingress": 0.0,
+        "optimize": 0.0,
+        "ttft": 0.0,
+        "generation": 0.0,
+        "total": 0.0,
         "samples": 0,
     },
 }
@@ -79,10 +65,10 @@ def _metrics_json() -> str:
     return json.dumps(m, indent=2)
 
 
-# ── minify stats persistence (SLIMTOKEN_STATS_FILE) ─────────────────────────
-# Optional: when SLIMTOKEN_STATS_FILE is set, cumulative minify stats are
-# written to that JSON file after each optimized request (atomic tmp+rename).
-# Backported from CortexAgent's grammar_proxy._record_minify().
+
+
+
+
 _MINIFY_STATS_FILE = os.environ.get("SLIMTOKEN_STATS_FILE") or None
 _minify_stats = {
     "runs": 0, "tokens_in": 0, "tokens_out": 0, "tokens_saved": 0,
@@ -121,10 +107,10 @@ def _record_minify(stats) -> None:
         pass
 
 
-# ── minify config from env ────────────────────────────────────────────────────
-# The single config builder lives in :mod:`slimtoken.profiles` (one config
-# surface shared by proxy / CLI / MCP / skill — no named profiles). These two
-# helpers remain here only for the non-minify env knobs (HTTP2, etc.).
+
+
+
+
 def _bool_env(name: str, default: bool) -> bool:
     v = os.environ.get(name)
     if v is None:
@@ -138,8 +124,8 @@ from .profiles import build_config as build_minify_cfg  # noqa: E402
 _CFG = build_minify_cfg()
 
 
-# Output filter (Phase C): active only when SLIMTOKEN_MAX_TOKENS or
-# SLIMTOKEN_STOP is set; otherwise None → raw passthrough, zero overhead.
+
+
 def _build_out_filter():
     try:
         from .output_filter import from_env
@@ -149,19 +135,19 @@ def _build_out_filter():
         return None
 
 
-# Built once at import (env is process-wide for the proxy process).
+
 _OUT_FILTER = _build_out_filter()
 
 
-# ── request context + timestamps ──────────────────────────────────────────────
+
 @dataclass
 class RequestContext:
     request_id: int = 0
-    t0: float = 0.0   # ingress
-    t1: float = 0.0   # request fully read
-    t2: float = 0.0   # optimized (parse + minify done)
-    t3: float = 0.0   # first output token received from upstream
-    t4: float = 0.0   # final token / stream end
+    t0: float = 0.0
+    t1: float = 0.0
+    t2: float = 0.0
+    t3: float = 0.0
+    t4: float = 0.0
     pt: int = 0
     ct: int = 0
 
@@ -175,7 +161,7 @@ class RequestContext:
         }
 
 
-# ── chunked body decode (stdlib, pure) ─────────────────────────────────────────
+
 def _dechunk(data: bytes):
     out = bytearray(); i = 0; n = len(data)
     while True:
@@ -196,31 +182,29 @@ def _dechunk(data: bytes):
     return bytes(out)
 
 
-# ── fast-path decision ────────────────────────────────────────────────────────
-_FAST_PATH_MAX = 4096  # bodies under this AND no minify stages → raw passthrough
+
+_FAST_PATH_MAX = 4096
 
 
 def _is_fast_path(body: bytes) -> bool:
-    """Raw passthrough when minify is OFF, or the body is small AND no stages
-    target it (no tool_results to dedup, short history). Conservative: only skip
-    when there is genuinely nothing to optimize."""
+
     if not _CFG.enabled_stages:
         return True
     if len(body) > _FAST_PATH_MAX:
         return False
-    # cheap byte probe (no full parse): look for signals that stages would act on.
-    # covers Anthropic (tool_result/system) AND OpenAI/Ollama (tool_calls/role:tool).
+
+
     if (b'"tool_result"' in body or b'"tools"' in body or b'"system"' in body
             or b'"tool_calls"' in body or b'"role": "tool"' in body
             or b'"role":"tool"' in body):
         return False
-    # small body with no tool_result/tools/system — only messages, and minify of
-    # short text is ~zero gain. Still, messages minify collapses blanks; to be
-    # safe and preserve behavior, only fast-path when minify master is off.
+
+
+
     return False
 
 
-# ── minify (sync CPU; inline on the loop) ──────────────────────────────────────
+
 def _minify_body(body: bytes, fmt: str = "anthropic") -> bytes:
     try:
         parsed = jloads(body)
@@ -230,8 +214,8 @@ def _minify_body(body: bytes, fmt: str = "anthropic") -> bytes:
     if isinstance(parsed, dict):
         if "grammar" in parsed:
             del parsed["grammar"]
-        # normalize to Anthropic canonical for the (frozen) pipeline, then back.
-        # fmt="anthropic" (default) skips both branches → byte-identical to before.
+
+
         if fmt != "anthropic":
             parsed = adapters.to_canonical(parsed, fmt)
         if _CFG.enabled_stages:
@@ -244,14 +228,11 @@ def _minify_body(body: bytes, fmt: str = "anthropic") -> bytes:
     return body
 
 
-# ── usage extraction from a rolling tail of the streamed response ────────────
+
 def _extract_usage(tail: bytes) -> tuple:
-    """Best-effort parse of usage from the response tail. Handles BOTH:
-      - SSE streams: the final `data: {...usage...}` event
-      - plain JSON:  a single body with a top-level `usage` field
-    Returns (prompt_tokens, completion_tokens). 0,0 if not found."""
+
     pt, ct = 0, 0
-    # 1. SSE: find the last `data: ` line containing a usage object
+
     has_data = b"\ndata:" in tail or tail.lstrip().startswith(b"data:")
     if has_data:
         for line in tail.split(b"\n"):
@@ -272,7 +253,7 @@ def _extract_usage(tail: bytes) -> tuple:
             ct = u.get("completion_tokens") or u.get("output_tokens") or ct
             if pt or ct:
                 return pt, ct
-    # 2. plain JSON body with a top-level usage field
+
     if not has_data:
         try:
             obj = jloads(tail)
@@ -286,9 +267,9 @@ def _extract_usage(tail: bytes) -> tuple:
     return pt, ct
 
 
-# ── async request handler ─────────────────────────────────────────────────────
+
 async def _read_request(reader: asyncio.StreamReader) -> Optional[tuple]:
-    """Read (method, path, headers, body). None on malformed/empty."""
+
     try:
         head = await reader.readuntil(b"\r\n\r\n")
     except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ConnectionError):
@@ -309,7 +290,7 @@ async def _read_request(reader: asyncio.StreamReader) -> Optional[tuple]:
     te = headers.get("transfer-encoding", "").lower()
     cl = headers.get("content-length")
     if "chunked" in te:
-        # read until the terminating 0-chunk
+
         term = b"\r\n0\r\n\r\n"
         try:
             body = await reader.readuntil(term)
@@ -332,7 +313,7 @@ def _forward_headers(headers: dict, host: str, length: int) -> dict:
         if k == "user-agent":
             out["User-Agent"] = f"slimtoken/{__version__}"
         else:
-            # preserve original case-ish
+
             out[k] = v
     out["Host"] = host
     out["Content-Length"] = str(length)
@@ -358,9 +339,9 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
             await writer.drain()
             return
 
-        # optimize (or fast-path passthrough, unparsed). route by path to detect
-        # the request format (anthropic /v1/messages, openai /v1/chat/completions,
-        # ollama /api/chat); anthropic (default) skips the adapter branches.
+
+
+
         if method == "POST" and not _is_fast_path(body):
             out_body = _minify_body(body, adapters.detect(path) or "anthropic")
         else:
@@ -370,11 +351,11 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
         url = upstream.base_url + path
         fwd = _forward_headers(headers, f"{upstream.host}:{upstream.port}", len(out_body))
 
-        # forward + stream response back to the client. aiter_bytes() yields
-        # DECOMPRESSED bytes (httpx auto-decodes content-encoding), so we strip
-        # content-encoding/length/TE upstream and re-emit with Connection: close
-        # (HTTP/1.1 allows a body delimited by connection close).
-        tail = bytearray()  # rolling tail for usage extraction (capped)
+
+
+
+
+        tail = bytearray()
         first = True
         try:
             async with client.stream(method, url, content=out_body, headers=fwd,
@@ -389,9 +370,9 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
                 writer.write(("".join(out_h) + "\r\n").encode())
                 await writer.drain()
 
-                # output filter (max_tokens / stop enforcement). Inert (None)
-                # when neither SLIMTOKEN_MAX_TOKENS nor SLIMTOKEN_STOP is set —
-                # then we stream raw bytes with zero per-chunk overhead.
+
+
+
                 out_filter = _OUT_FILTER
                 async for chunk in resp.aiter_bytes():
                     if not chunk:
@@ -405,7 +386,7 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
                         await writer.drain()
                     if out_filter is not None and out_filter._closed:
                         break
-                    # rolling tail (keep last 16 KB for usage extraction)
+
                     tail += chunk
                     if len(tail) > 16384:
                         del tail[:-16384]
@@ -446,7 +427,7 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
             pass
 
 
-# ── server ────────────────────────────────────────────────────────────────────
+
 def _maybe_uvloop():
     try:
         import uvloop  # noqa: F401

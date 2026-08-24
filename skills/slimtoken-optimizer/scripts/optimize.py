@@ -1,27 +1,5 @@
 #!/usr/bin/env python3
-"""Thin skill wrapper that shells out to the slimtoken CLI (primary) or, when the
-CLI isn't on PATH and an MCP server is, falls back to a one-shot MCP stdio call.
 
-This script does NO optimization itself — it is a dispatcher. It exists so an
-agent runtime loading this skill can run ``python3 scripts/optimize.py ...``
-without knowing whether slimtoken is installed as a CLI or only exposed via MCP.
-
-Usage (mirrors the CLI subcommands):
-
-    # minify a request body (file or stdin) and print the result + stats
-    python3 scripts/optimize.py optimize [--input FILE]
-                                          [--max-input-tokens N] [--json]
-
-    # list local-model presets by VRAM tier (optionally with measured reduction)
-    python3 scripts/optimize.py presets [--vram-gb 4|8|16] [--measure]
-
-    # count tokens in a request body (file or stdin)
-    python3 scripts/optimize.py estimate [--input FILE] [--model NAME]
-
-With no subcommand, reads a request JSON from stdin and runs `optimize`.
-
-Exit codes: 0 success, 1 no slimtoken available, 2 subcommand error.
-"""
 from __future__ import annotations
 
 import json
@@ -41,7 +19,7 @@ def _run_cli(argv: list[str]) -> int:
 
 
 def _mcp_available() -> bool:
-    """True if slimtoken-mcp (or python -m slimtoken.mcp_server) is importable."""
+
     if shutil.which("slimtoken-mcp"):
         return True
     try:
@@ -55,8 +33,7 @@ def _mcp_available() -> bool:
 
 
 def _mcp_call(tool: str, arguments: dict) -> dict:
-    """One-shot MCP stdio call: initialize → tools/call → exit. Returns the
-    parsed tool result text as a dict."""
+
     import select
     bin = shutil.which("slimtoken-mcp") or sys.executable
     base = [bin] if shutil.which("slimtoken-mcp") else [sys.executable, "-m", "slimtoken.mcp_server"]
@@ -118,10 +95,10 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     cmd = args.cmd or "optimize"
     if cmd == "optimize" and not (args.input):
-        # default subcommand may still need --input; allow bare stdin
+
         pass
 
-    # ── CLI path (primary) ──────────────────────────────────────────────────
+
     if _have_cli():
         if cmd == "optimize":
             cli_args = ["optimize"]
@@ -136,13 +113,13 @@ def main(argv=None) -> int:
             if args.measure:  cli_args += ["--measure"]
             return _run_cli(cli_args)
         if cmd == "estimate":
-            # CLI has no estimate subcommand; use `optimize`, which prints the
-            # raw token count (tokens_in, counted before minify) to stderr.
+
+
             cli_args = ["optimize"]
             if args.input: cli_args += ["-i", args.input]
             return _run_cli(cli_args)
 
-    # ── MCP fallback ─────────────────────────────────────────────────────────
+
     if not _mcp_available():
         print("slimtoken not found: install the CLI (`pip install slimtoken`) "
               "or run `slimtoken-mcp`.", file=sys.stderr)
