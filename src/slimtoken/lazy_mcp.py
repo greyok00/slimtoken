@@ -1,23 +1,5 @@
 #!/usr/bin/env python3
-"""lazy_mcp — generic thin wrapper for optional MCP servers (slimtoken).
 
-Exposes ONE stub tool per configured MCP server. When the stub is called, it
-spawns the real MCP server (stdio), performs the JSON-RPC handshake, lists
-the real tools, proxies the requested call, and shuts the real server down.
-This keeps idle tool tax minimal: instead of N verbose tool schemas loaded on
-every request, the model sees a single small stub until it actually needs the
-server.
-
-Config (JSON file, default ``~/.slimtoken/lazy_mcp.json``):
-  Each entry: {"name": "firecrawl",
-               "command": ["npx", "-y", "firecrawl-mcp"],
-               "tools_hint": ["scrape", "search", ...]}
-  Missing/empty config = no servers = the stub reports "not configured" (no-op).
-
-Usage:
-  slimtoken lazy-mcp --name firecrawl      # run the stdio MCP stub server
-  slimtoken lazy-mcp smoke                 # self-test (no network)
-"""
 from __future__ import annotations
 
 import argparse
@@ -71,7 +53,7 @@ def _proxy_server(command: List[str]) -> Tuple[subprocess.Popen, int]:
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True)
 
-    # handshake (some servers send initialize first)
+
     hello = _read_json(proc.stdout)
     if hello and hello.get("method") == "initialize":
         proc.stdin.write(json.dumps({
@@ -154,7 +136,7 @@ def _build_stub(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def run_server(name: str) -> None:
-    """Run the stdio MCP stub server for one configured entry."""
+
     entries = load_config(name)
     if not entries:
         stub = {

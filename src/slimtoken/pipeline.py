@@ -1,21 +1,4 @@
-"""pipeline — the minification orchestrator (the slimtoken core).
 
-``minify_request(body, cfg)`` takes a plain ``dict`` (a parsed Anthropic-style
-request body) and a :class:`MinifyConfig`, and returns ``(new_body, MinifyStats)``.
-It imports only the stdlib minify modules — nothing from any other project — so
-the pipeline is fully standalone.
-
-Every stage is ON by default. A stage never aborts the others: a failure is
-recorded in ``stats.errors`` and the body passes through that stage untouched.
-
-Counting uses :mod:`slimtoken.tokencount` (real cl100k_base tokenizer, cached by
-content hash) — no full-body ``json.dumps`` just to count tokens. The message
-stages (minify + dedup + distill) run in a single merged 2-pass
-:func:`optimize_messages` (one analysis pass for the dedup map + per-message
-counts, one transform pass) instead of 3-4 separate walks. Conditional skips
-short-circuit stages that have nothing to do (no large tool_results → no
-dedup; short conversation → no distill/budget; short system → no system minify).
-"""
 from __future__ import annotations
 
 import re
@@ -32,28 +15,28 @@ from .token_budget import enforce_budget
 from .tokencount import count_obj
 from collections import Counter
 
-# DOM stage is imported lazily (optional) so the core pipeline stays decoupled
-# from the DOM module.
+
+
 _DOM_THRESHOLD = 4096
 _HTML_HINT = re.compile(r"<(?:html|!doctype|body|div|script)\b", re.IGNORECASE)
 
 
 @dataclass
 class MinifyConfig:
-    token_budget: int = 131072      # 0 = off; default = generous backstop (only catches bloat)
+    token_budget: int = 131072
     enabled_stages: Set[str] = field(default_factory=lambda: {
         "tools", "system", "messages", "dedup", "distill",
     })
     tool_skip: Set[str] = field(default_factory=set)
-    keep_last: int = 8              # distill + budget: always keep most recent N
+    keep_last: int = 8
     dedup_min_chars: int = _DEDUP_MIN
     distill_max_chars: int = _DISTILL_MAX
-    # Distill ONLY assistant messages by default. Old user turns are the task
-    # spec — distilling them drops requirements. Opt in to compress user turns.
+
+
     distill_include_user: bool = False
-    # Lossy opt-in (off by default — see tool_result_compress; not wired here).
+
     tool_compress: bool = False
-    # Lossy opt-in: prune large HTML tool_results (see dom_pruner).
+
     minify_dom: bool = False
 
 
@@ -87,7 +70,7 @@ class MinifyStats:
 
 
 def _minify_system_field(system):
-    """System can be a string OR a list of text blocks. Returns minified copy."""
+
     if isinstance(system, str):
         return minify_system(system)
     if isinstance(system, list):
@@ -104,7 +87,7 @@ def _minify_system_field(system):
 
 
 def _maybe_prune_dom_in_messages(messages, stats):
-    """Opt-in: prune tool_result blocks that look like large HTML payloads."""
+
     if not isinstance(messages, list):
         return messages
     try:
@@ -142,8 +125,7 @@ def _maybe_prune_dom_in_messages(messages, stats):
 
 
 def _distill_content(content, max_chars):
-    """Per-message distill (the inner logic of distill_old_turns). Returns
-    (new_content, changed). Only text blocks are touched."""
+
     if isinstance(content, str):
         nc = distill_text(content, max_chars)
         return (nc, nc is not content and nc != content)
@@ -164,15 +146,7 @@ def _distill_content(content, max_chars):
 
 
 def optimize_messages(messages, cfg: MinifyConfig, stats: MinifyStats):
-    """Merged 2-pass message transform: minify + distill + dedup-stub.
 
-    Pass 1 (analysis): build the dedup latest-map + dup stubs + per-message
-    counts (one walk). Pass 2 (transform): per message, minify text blocks,
-    distill old text, stub older-duplicate tool_results — one walk. Pair-safe
-    by construction (only rewrites content fields; never removes/reorders).
-
-    Returns the original list object if nothing changed (zero-copy no-op).
-    """
     if not isinstance(messages, list) or len(messages) < 2:
         return messages
     n = len(messages)
@@ -181,7 +155,7 @@ def optimize_messages(messages, cfg: MinifyConfig, stats: MinifyStats):
     distill_on = "distill" in cfg.enabled_stages
     cutoff = (n - cfg.keep_last) if (distill_on and n > cfg.keep_last) else -1
 
-    # ---- pass 1: analysis (dedup map + stubs) ----
+
     stubs: Dict[tuple, object] = {}
     if dedup_on:
         latest: Dict[str, int] = {}
@@ -212,7 +186,7 @@ def optimize_messages(messages, cfg: MinifyConfig, stats: MinifyStats):
         if stubs and stats is not None:
             stats.dedup_count = len(stubs)
 
-    # ---- pass 2: transform ----
+
     new_msgs = []
     any_changed = False
     minify_hits = 0
@@ -224,7 +198,7 @@ def optimize_messages(messages, cfg: MinifyConfig, stats: MinifyStats):
         local_changed = False
         minify_hit = False
 
-        # minify text blocks (stage 3)
+
         if minify_on:
             nc = minify_message_content(content)
             if nc is not content:
@@ -232,9 +206,9 @@ def optimize_messages(messages, cfg: MinifyConfig, stats: MinifyStats):
                 local_changed = True
                 minify_hit = True
 
-        # distill old text (stage 5) — operates on (possibly minified) content.
-        # Assistant-only by default: old user turns are the task spec and must
-        # survive. Opt-in (distill_include_user) compresses user turns too.
+
+
+
         if distill_on and 0 <= i < cutoff and (
                 cfg.distill_include_user or msg.get("role") == "assistant"):
             nc, changed = _distill_content(content, cfg.distill_max_chars)
@@ -244,7 +218,7 @@ def optimize_messages(messages, cfg: MinifyConfig, stats: MinifyStats):
                 if stats is not None:
                     stats.distill_count += 1
 
-        # dedup-stub older duplicate tool_results (stage 4)
+
         if stubs and isinstance(content, list):
             nc = []
             c2 = False
@@ -274,18 +248,14 @@ def optimize_messages(messages, cfg: MinifyConfig, stats: MinifyStats):
 
 
 def minify_request(body: dict, cfg: MinifyConfig) -> tuple:
-    """Minify a parsed request body. Returns (new_body, MinifyStats).
 
-    Never mutates the input. Never raises from a stage — failures are recorded
-    in stats so one broken stage can't break inference.
-    """
     stats = MinifyStats()
     if not isinstance(body, dict):
         return body, stats
     stats.tokens_in = count_obj(body) if body else 0
     nb = dict(body)
 
-    # 1. tools
+
     if "tools" in nb and "tools" in cfg.enabled_stages:
         try:
             before = len(nb.get("tools", []))
@@ -294,8 +264,8 @@ def minify_request(body: dict, cfg: MinifyConfig) -> tuple:
         except Exception as e:
             stats.errors.append(f"tools:{e}")
 
-    # 2. system — always run when enabled (blank-line bloat happens on short
-    # prompts too; the pass is a cheap single fence-aware walk).
+
+
     if "system" in nb and "system" in cfg.enabled_stages:
         try:
             nb["system"] = _minify_system_field(nb["system"])
@@ -303,35 +273,35 @@ def minify_request(body: dict, cfg: MinifyConfig) -> tuple:
         except Exception as e:
             stats.errors.append(f"system:{e}")
 
-    # 3-5. messages: merged minify + distill + dedup in one 2-pass — conditional
+
     if "messages" in nb and any(s in cfg.enabled_stages for s in ("messages", "dedup", "distill")):
         try:
             msgs = nb.get("messages")
             if isinstance(msgs, list) and msgs:
-                # short-circuit: nothing to distill/dedup on tiny conversations
-                # (minify still runs on any size; it's cheap and per-message).
+
+
                 new_msgs = optimize_messages(msgs, cfg, stats)
                 if new_msgs is not msgs:
                     nb["messages"] = new_msgs
         except Exception as e:
             stats.errors.append(f"messages:{e}")
 
-    # 5b. dom (opt-in) — prune large HTML tool_results before the budget pass.
+
     if cfg.minify_dom and "messages" in nb:
         try:
             nb["messages"] = _maybe_prune_dom_in_messages(nb.get("messages"), stats)
         except Exception as e:
             stats.errors.append(f"dom:{e}")
 
-    # 6. budget — pair-safe hard prune (backstop). Conditional: only if over.
+
     if cfg.token_budget > 0 and "messages" in nb:
         try:
             nb = enforce_budget(nb, cfg.token_budget, keep_last=cfg.keep_last, stats=stats.__dict__)
         except Exception as e:
             stats.errors.append(f"budget:{e}")
 
-    # 7. type-specific tool_result compression (lossy, opt-in). Pair-safe:
-    #    only rewrites the `content` field of tool_result blocks.
+
+
     if cfg.tool_compress and "messages" in nb:
         try:
             from .tool_result_compress import compress_messages
@@ -345,14 +315,9 @@ def minify_request(body: dict, cfg: MinifyConfig) -> tuple:
     return nb, stats
 
 
-# ── Chunked path helper ──────────────────────────────────────────────────────
-def minify_chunked_first_event(event_bytes: bytes, cfg: MinifyConfig):
-    """Minify the first SSE ``data: {...}`` event of a streaming request.
 
-    Returns (new_event_bytes, stats). On ANY parse problem returns the input
-    unchanged with empty stats (caller falls back to raw passthrough). Most
-    tool/system mass lands in the first event of a streaming /v1/messages POST.
-    """
+def minify_chunked_first_event(event_bytes: bytes, cfg: MinifyConfig):
+
     from ._deps import jloads, jdumps
     if not event_bytes:
         return event_bytes, MinifyStats()

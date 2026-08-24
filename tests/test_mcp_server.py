@@ -1,9 +1,4 @@
-"""test_mcp_server — tests for the slimtoken MCP server (run: python3 test_mcp_server.py).
 
-New tests only; does not touch the existing suite. Spawns `python -m slimtoken.mcp_server`
-as a subprocess and exercises the JSON-RPC stdio protocol end-to-end (initialize →
-tools/list → tools/call for every tool + the error path).
-"""
 import json
 import os
 import sys
@@ -63,8 +58,7 @@ class MCPClient:
 
 
 def _big_request():
-    """A bloated-but-valid request that triggers dedup (the same large tool_result
-    repeated across turns) so optimize actually reduces it."""
+
     big = "line %d: implementation detail here\n" * 80
     msgs = []
     for i in range(4):
@@ -83,7 +77,7 @@ def _big_request():
             "messages": msgs}
 
 
-# ── 1. initialize + tools/list ────────────────────────────────────────────────
+
 def test_init_and_list():
     c = MCPClient()
     try:
@@ -103,7 +97,7 @@ def test_init_and_list():
                     "slimtoken.inspect_budget", "slimtoken.get_config",
                     "slimtoken.list_model_presets", "slimtoken.high_context_presets"}
         check("all expected tool names present", set(names) == expected)
-        # every tool has a valid JSON-schema inputSchema
+
         ok = all("inputSchema" in t and t["inputSchema"]["type"] == "object"
                  for t in r["result"]["tools"])
         check("every tool has object inputSchema", ok)
@@ -111,7 +105,7 @@ def test_init_and_list():
         c.close()
 
 
-# ── 2. estimate_tokens ────────────────────────────────────────────────────────
+
 def test_estimate_tokens():
     c = MCPClient()
     try:
@@ -133,7 +127,7 @@ def test_estimate_tokens():
         c.close()
 
 
-# ── 3. optimize_messages reduces + pair-safe ──────────────────────────────────
+
 def test_optimize_messages():
     c = MCPClient()
     try:
@@ -154,7 +148,7 @@ def test_optimize_messages():
               f"{o['reduction_pct']}%")
         check("optimize dedup_count >= 3 (4 duplicate tool_results)",
               o["stats"]["dedup_count"] >= 3)
-        # pair-safe: every tool_use id still has a matching tool_result
+
         out_msgs = o["messages"]
         use_ids = set()
         result_ids = set()
@@ -173,7 +167,7 @@ def test_optimize_messages():
         c.close()
 
 
-# ── 4. inspect_budget read-only ───────────────────────────────────────────────
+
 def test_inspect_budget():
     c = MCPClient()
     try:
@@ -195,7 +189,7 @@ def test_inspect_budget():
         c.close()
 
 
-# ── 5. minify_tool_result ─────────────────────────────────────────────────────
+
 def test_minify_tool_result():
     c = MCPClient()
     try:
@@ -203,7 +197,7 @@ def test_minify_tool_result():
                 "params": {"protocolVersion": "2024-11-05", "capabilities": {},
                            "clientInfo": {"name": "t", "version": "0"}}})
         c.notify({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        # a directory listing the type-detector recognizes
+
         listing = "total 0\n" + "\n".join(
             "drwxr-xr-x 2 user group 4096 Jan  1 12:00 dir%03d" % i for i in range(40))
         r = c.call({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -219,7 +213,7 @@ def test_minify_tool_result():
         c.close()
 
 
-# ── 6. prune_context ──────────────────────────────────────────────────────────
+
 def test_prune_context():
     c = MCPClient()
     try:
@@ -236,15 +230,15 @@ def test_prune_context():
         check("prune returns prompt_block", "prompt_block" in o)
         check("prune token_count is an int", isinstance(o["token_count"], int))
         check("prune token_count positive", o["token_count"] > 0)
-        # best-effort: a single large message can't be dropped below budget
-        # without removing it entirely; prune keeps recent context rather than
-        # returning empty. Just assert the block is non-empty + contains the marker.
+
+
+
         check("prune prompt_block non-empty", len(o["prompt_block"]) > 0)
     finally:
         c.close()
 
 
-# ── 7. get_config ──────────────────────────────────────────────────────────────
+
 def test_get_config():
     c = MCPClient()
     try:
@@ -261,10 +255,10 @@ def test_get_config():
         check("get_config enabled_stages is a sorted list",
               isinstance(cfg["enabled_stages"], list) and cfg["enabled_stages"] == sorted(cfg["enabled_stages"]))
         check("always-on enables distill", "distill" in cfg["enabled_stages"])
-        # lossy tool_compress is OFF by default (opt-in via SLIMTOKEN_TOOL_COMPRESS)
+
         check("always-on tool_compress off by default",
               not cfg.get("tool_compress"))
-        # old user turns preserved by default (distill_include_user off)
+
         check("always-on distill_include_user off by default",
               not cfg.get("distill_include_user"))
         check("always-on token_budget is 131072", cfg.get("token_budget") == 131072)
@@ -273,7 +267,7 @@ def test_get_config():
         c.close()
 
 
-# ── 8. list_model_presets ──────────────────────────────────────────────────────
+
 def test_list_model_presets():
     c = MCPClient()
     try:
@@ -297,7 +291,7 @@ def test_list_model_presets():
         c.close()
 
 
-# ── 9. optimize with openai format (adapter round-trip) ────────────────────────
+
 def test_optimize_openai_format():
     c = MCPClient()
     try:
@@ -305,7 +299,7 @@ def test_optimize_openai_format():
                 "params": {"protocolVersion": "2024-11-05", "capabilities": {},
                            "clientInfo": {"name": "t", "version": "0"}}})
         c.notify({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        # OpenAI shape: system as a role:"system" message, tool_calls + role:"tool"
+
         body = {"model": "gpt-x", "messages": [
             {"role": "system", "content": "You are a helpful assistant.   "},
             {"role": "user", "content": "Please list files."},
@@ -329,7 +323,7 @@ def test_optimize_openai_format():
         check("openai round-trip keeps role:tool result",
               any(m.get("role") == "tool" for m in msgs))
         check("openai reduction > 0", o["reduction_pct"] > 0, f"{o['reduction_pct']}")
-        # pair-safety: tool_call id survives
+
         ids = [tc.get("id") for m in msgs if m.get("tool_calls")
                for tc in m["tool_calls"]]
         check("tool_call id preserved", "call_1" in ids, f"{ids}")
@@ -337,7 +331,7 @@ def test_optimize_openai_format():
         c.close()
 
 
-# ── 10. high_context_presets ──────────────────────────────────────────────────
+
 def test_high_context_presets():
     c = MCPClient()
     try:
@@ -359,7 +353,7 @@ def test_high_context_presets():
         check("effective_ctx > nominal_ctx", row["effective_ctx"] > row["nominal_ctx"],
               f"{row['effective_ctx']} vs {row['nominal_ctx']}")
         check("kv_quant is q4_0", row["kv_quant"] == "q4_0")
-        # best=true returns a single row
+
         r2 = c.call({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
                      "params": {"name": "slimtoken.high_context_presets",
                                 "arguments": {"vram_gb": 16, "best": True}}}, tmax=40)
@@ -370,7 +364,7 @@ def test_high_context_presets():
         c.close()
 
 
-# ── 11. error path: unknown tool + bad args ─────────────────────────────────────
+
 def test_errors():
     c = MCPClient()
     try:
@@ -381,12 +375,12 @@ def test_errors():
         r = c.call({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                     "params": {"name": "bogus.tool", "arguments": {}}})
         check("unknown tool → isError True", r["result"]["isError"] is True)
-        # missing messages
+
         r = c.call({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
                     "params": {"name": "slimtoken.estimate_tokens",
                                "arguments": {"messages": "not-a-list"}}})
         check("bad messages type → isError True", r["result"]["isError"] is True)
-        # unknown JSON-RPC method
+
         r = c.call({"jsonrpc": "2.0", "id": 3, "method": "no/such/method",
                     "params": {}})
         check("unknown RPC method → error code -32601",

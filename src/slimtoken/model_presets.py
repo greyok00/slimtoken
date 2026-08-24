@@ -1,15 +1,4 @@
-"""model_presets — default local-model configs by VRAM tier + measured reduction.
 
-A curated table of common local models grouped by GPU VRAM tier, each with a
-usable context. The reduction numbers are NOT hand-waved: :func:`measure_reduction`
-runs the EXISTING pipeline (:func:`slimtoken.pipeline.minify_request`) on a
-representative payload with the default always-on :class:`MinifyConfig` and
-reports the real token drop. So the "how much slimtoken optimizes" figure is
-computed by the software itself, not asserted.
-
-This module adds NO new optimization heuristics. It is a data table + a thin
-measurement helper that calls the existing pipeline and tokenizer.
-"""
 from __future__ import annotations
 
 from typing import Dict, List, Optional
@@ -19,9 +8,9 @@ from .profiles import build_config
 from .tokencount import count_obj
 
 
-# ── VRAM-tier model table ────────────────────────────────────────────────────
-# tier: (label, min_gb, max_gb). Each model: name, quant, context (usable, not
-# nominal — KV cache + overhead eat into the advertised max), notes.
+
+
+
 MODEL_PRESETS: List[Dict] = [
     {"vram_gb": 4, "model": "Llama 3.2 3B", "quant": "Q4_K_M",
      "context": 8192, "notes": "best all-rounder at 4GB; low latency"},
@@ -47,24 +36,24 @@ MODEL_PRESETS: List[Dict] = [
 
 
 def list_presets(vram_gb: Optional[int] = None) -> List[Dict]:
-    """Return preset rows, optionally filtered to an exact VRAM tier."""
+
     if vram_gb is None:
         return [dict(r) for r in MODEL_PRESETS]
     return [dict(r) for r in MODEL_PRESETS if r["vram_gb"] == vram_gb]
 
 
 def presets_by_tier() -> Dict[int, List[Dict]]:
-    """Group presets by VRAM tier (4, 8, 16)."""
+
     out: Dict[int, List[Dict]] = {}
     for r in MODEL_PRESETS:
         out.setdefault(r["vram_gb"], []).append(dict(r))
     return out
 
 
-# ── representative payloads (test DATA, not heuristics) ──────────────────────
-# A "typical" payload: a handful of turns with some blank-line bloat + tool
-# schemas. A "bloated" payload: the realistic worst case the proxy targets —
-# the same big file re-read every turn (dedup) + verbose old prose (distill).
+
+
+
+
 _VERBOSE_SYS = ("<cold_memory>\nYou are a senior engineer. Follow conventions.\n"
                 "Never leak personal info.\n</cold_memory>\n\n\n\n"
                 "Be concise. Use tables when comparing.\n")
@@ -117,13 +106,7 @@ _PAYLOADS = {"typical": _payload_typical, "bloated": _payload_bloated}
 
 
 def measure_reduction(size: str = "bloated") -> Dict:
-    """Run the existing pipeline on a representative payload with the default
-    always-on config.
 
-    Returns {"size", "tokens_in", "tokens_out", "reduction_pct", "stages",
-    "errors"}. Uses the real cl100k tokenizer via :func:`count_obj` (no
-    whole-body serialize). No new heuristics — just measurement.
-    """
     import copy
     if size not in _PAYLOADS:
         size = "bloated"
@@ -140,9 +123,7 @@ def measure_reduction(size: str = "bloated") -> Dict:
 
 
 def preset_with_reduction(vram_gb: Optional[int] = None) -> List[Dict]:
-    """Preset rows enriched with the live measured reduction on a bloated
-    payload (the case slimtoken is built for). All rows use the same default
-    always-on config, so the measurement is computed once and shared."""
+
     m = measure_reduction("bloated")
     rows = []
     for r in list_presets(vram_gb):

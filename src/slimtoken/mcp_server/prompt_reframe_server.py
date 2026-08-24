@@ -1,33 +1,4 @@
-"""prompt_reframe_server — stdio MCP server exposing slimtoken's rewriter.
 
-Speaks MCP JSON-RPC 2.0 over stdio (same wire format as the main
-:mod:`slimtoken.mcp_server` server). The server is a thin adapter; it
-calls the pure-stdlib functions in :mod:`slimtoken.prompt_reframe` and
-wraps the results as MCP ``tools/call`` content blocks. No LLM roundtrip.
-
-Why a separate server? The main ``slimtoken-mcp`` server exposes the
-*request-body* minification pipeline (tools, system, messages, dedup,
-distill, budget). This one exposes the *natural-language* rewriter
-(classify / reframe / shrink / minify / build_system). Same protocol,
-different toolkit — hosts that already wire a single MCP server can
-choose either based on the kind of work their agent does.
-
-Tool surface (``slimtoken.reframe.*`` namespace):
-
-  slimtoken.reframe.classify_domain — keyword-match a prompt to a domain.
-  slimtoken.reframe.reframe        — strip filler, dedupe, normalize.
-  slimtoken.reframe.shrink         — TextRank-lite sentence ranking, cap.
-  slimtoken.reframe.minify         — whitespace/punctuation squeeze.
-  slimtoken.reframe.build_system   — compose a tight system prompt.
-  slimtoken.reframe.frame          — run all five stages in one call.
-
-All five primitives are dependency-free (Python 3.10+ stdlib), so this
-server runs anywhere slimtoken is installed with no extras.
-
-Usage:
-  python -m slimtoken.mcp_server.prompt_reframe_server      # stdio
-  slimtoken-reframe-mcp                                     # entry point
-"""
 from __future__ import annotations
 
 import json
@@ -41,7 +12,7 @@ PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "slimtoken-reframe-mcp"
 
 
-# ── JSON-RPC plumbing ──────────────────────────────────────────────────────
+
 def _send(obj: Dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
     sys.stdout.flush()
@@ -70,7 +41,7 @@ def _error(req_id: Any, code: int, message: str) -> Dict[str, Any]:
             "error": {"code": code, "message": message}}
 
 
-# ── Tool schemas ────────────────────────────────────────────────────────────
+
 def _schema_tools() -> List[Dict[str, Any]]:
     return [
         {
@@ -194,7 +165,7 @@ def _content(obj: Any) -> List[Dict[str, Any]]:
     return [{"type": "text", "text": json.dumps(obj, ensure_ascii=False)}]
 
 
-# ── Tool handlers (thin; just call prompt_reframe) ─────────────────────────
+
 def _call_classify_domain(args: Dict[str, Any]) -> Dict[str, Any]:
     prompt = args.get("prompt", "")
     return {"domain": prompt_reframe.classify_domain(prompt)}
@@ -249,7 +220,7 @@ _HANDLERS = {
 }
 
 
-# ── Main loop ──────────────────────────────────────────────────────────────
+
 def main() -> int:
     while True:
         msg = _read()

@@ -1,10 +1,4 @@
-"""cli — entry point: slimtoken {serve|config-optimizer|install|uninstall}.
 
-Install/uninstall ONLY touch the ANTHROPIC_BASE_URL line in one shell rc file
-(with a marker block + a backup of the prior value). They never touch Claude
-Code's settings.json / CLAUDE.md / mcp.json — so uninstall is clean and
-reversible: restore the prior BASE_URL (or unset it) and the proxy is gone.
-"""
 from __future__ import annotations
 
 import argparse
@@ -29,7 +23,7 @@ def _detect_rc(explicit: str | None) -> Path:
 
 
 def _read_block(rc: Path):
-    """Return (before, url_line, after) if marker block present, else (full, None, None)."""
+
     if not rc.exists():
         return "", None, ""
     text = rc.read_text()
@@ -38,11 +32,11 @@ def _read_block(rc: Path):
         return text, None, ""
     j = text.find(MARKER_END, i)
     if j < 0:
-        return text, None, ""  # malformed → treat as absent
+        return text, None, ""
     before = text[:i]
     block = text[i + len(MARKER_BEGIN):j]
     after = text[j + len(MARKER_END):]
-    # find the export line inside block
+
     url_line = None
     for ln in block.splitlines():
         if "ANTHROPIC_BASE_URL=" in ln:
@@ -56,7 +50,7 @@ def cmd_install(args):
     url = args.url
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     before, existing_url_line, after = _read_block(rc)
-    # Back up a prior BASE_URL that lives OUTSIDE the marker block.
+
     prior = None
     if existing_url_line is None:
         for ln in before.splitlines() + after.splitlines():
@@ -70,7 +64,7 @@ def cmd_install(args):
         PREV_ENV.write_text(prior)
     block = f"\n{MARKER_BEGIN}\nexport ANTHROPIC_BASE_URL={url}\n{MARKER_END}\n"
     if existing_url_line is not None:
-        # replace the url inside the existing block
+
         text = rc.read_text()
         import re
         text = re.sub(
@@ -98,16 +92,16 @@ def cmd_uninstall(args):
     if i < 0 or j < 0:
         print("no slimtoken marker block found — already clean")
     else:
-        # remove the marker block (and the surrounding blank line)
+
         import re
         text = re.sub(re.escape(MARKER_BEGIN) + r".*?" + re.escape(MARKER_END) + r"\n?",
                       "", text, flags=re.DOTALL)
         rc.write_text(text)
         print(f"removed slimtoken block from {rc}")
-    # Restore prior BASE_URL — but ONLY if no unmarked ANTHROPIC_BASE_URL line
-    # already survives. Install only ADDS the marker block; it never removes a
-    # pre-existing unmarked ``export ANTHROPIC_BASE_URL=...`` line. If that line
-    # is still present, blindly appending the prior value would duplicate it.
+
+
+
+
     if PREV_ENV.exists():
         prior = PREV_ENV.read_text().strip()
         has_unmarked = any(
@@ -129,7 +123,7 @@ def cmd_uninstall(args):
 
 
 def cmd_serve(args):
-    # set env from CLI flags, then run the proxy.
+
     if args.port:
         os.environ["SLIMTOKEN_PORT"] = str(args.port)
     if args.upstream:
@@ -147,7 +141,7 @@ def cmd_serve(args):
 
 
 def cmd_latency(args):
-    """Smoke: send one request through the proxy and print the t0-t4 breakdown."""
+
     import json as _json
     import socket
     import time
@@ -169,7 +163,7 @@ def cmd_latency(args):
         pass
     s.close()
     t4 = time.perf_counter()
-    # fetch /metrics for the latency buckets (the just-served request is sample 1)
+
     import urllib.request
     try:
         m = _json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=2).read())
@@ -211,7 +205,7 @@ def cmd_lazy_mcp(args):
 
 
 def cmd_optimize(args):
-    """Minify a request body read from a file or stdin; print result + stats."""
+
     import json as _json
     import copy
     if args.input and args.input != "-":
@@ -252,7 +246,7 @@ def cmd_optimize(args):
 
 
 def cmd_presets(args):
-    """Print local-model presets by VRAM tier, optionally with measured reduction."""
+
     from . import model_presets as mp
     rows = (mp.preset_with_reduction(args.vram_gb) if args.measure
             else mp.list_presets(args.vram_gb))
@@ -269,9 +263,7 @@ def cmd_presets(args):
 
 
 def cmd_high_context(args):
-    """Print high-context VRAM-tier presets (dense + MoE) with the computed
-    nominal context that fits in VRAM and the effective raw-token capacity with
-    slimtoken compression. All numbers computed by config_optimizer + the pipeline."""
+
     from . import context_presets as cp
     rows = cp.list_context_presets(args.vram_gb)
     if not rows:

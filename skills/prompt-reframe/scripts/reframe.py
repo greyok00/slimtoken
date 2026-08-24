@@ -1,20 +1,5 @@
 #!/usr/bin/env python3
-"""scripts/reframe.py — run slimtoken.prompt_reframe on stdin or argv.
 
-Pipe a prompt in, get the tightened prompt + system + domain as JSON
-out. Useful for batch jobs and ad-hoc experiments.
-
-Usage:
-  echo "can you basically just tell me what is the answer" \\
-    | python3 scripts/reframe.py
-  python3 scripts/reframe.py "your rambling prompt"
-  python3 scripts/reframe.py --mode aggressive "long prompt here"
-
-Exit codes:
-  0  OK
-  2  bad arguments
-  3  rewriter raised (still writes JSON to stdout)
-"""
 from __future__ import annotations
 
 import argparse
@@ -22,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-# Make slimtoken importable when run from the repo before install.
+
 _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(_ROOT / "src"))

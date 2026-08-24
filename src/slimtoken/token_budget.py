@@ -1,18 +1,4 @@
-"""token_budget — estimate prompt size and enforce a soft token budget.
 
-Conservative by design: the Anthropic Messages API REQUIRES every tool_use to
-have a matching tool_result later in the conversation, and message ordering is
-strict. So budget enforcement drops a CONTIGUOUS LEADING prefix of messages
-that never splits a tool_use/tool_result pair, and always preserves the most
-recent ``keep_last`` messages. If the leading messages are themselves tool
-exchanges we can't safely drop, we drop nothing and just report over-budget.
-
-Counting: delegated to :mod:`slimtoken.tokencount` — a real cl100k_base
-tokenizer (cached by content hash) that NEVER serializes the whole body. The
-budget search uses per-message prefix sums, so each candidate drop count is an
-O(1) subtraction rather than a full re-serialize. (The old code re-serialized
-the entire body once per candidate — an N-way hidden tax.)
-"""
 from __future__ import annotations
 
 from typing import Dict
@@ -40,13 +26,8 @@ def _has_tool_result(msg) -> bool:
 
 
 def _tool_pairs(msgs):
-    """Return list of (use_idx, res_idx) for each tool_use→tool_result pair.
 
-    A tool_use lives in an assistant message; its tool_result lives in a later
-    user message referencing the same id. Pairs let us pick drop boundaries
-    that never split a use from its result (which the API rejects).
-    """
-    open_uses = {}  # id -> use_idx
+    open_uses = {}
     pairs = []
     for i, msg in enumerate(msgs):
         if not isinstance(msg, dict):
@@ -68,13 +49,9 @@ def _tool_pairs(msgs):
 
 
 def _valid_drop_points(msgs, k_max):
-    """Yield valid leading-prefix drop counts in [0, k_max].
 
-    A drop count k is valid iff no tool_use/tool_result pair straddles the
-    boundary: i.e. for every pair (u, r), NOT (u < k <= r). k=0 is always valid.
-    """
     pairs = _tool_pairs(msgs)
-    # forbidden intervals (u, r] — k inside (u, r] would split the pair.
+
     forbidden = [(u + 1, r) for (u, r) in pairs]
     for k in range(0, k_max + 1):
         bad = any(lo <= k <= hi for (lo, hi) in forbidden)
@@ -84,19 +61,11 @@ def _valid_drop_points(msgs, k_max):
 
 def enforce_budget(body: dict, token_budget: int, keep_last: int = 8,
                    stats: Dict | None = None) -> dict:
-    """Drop oldest messages to fit under ``token_budget``. Returns new body.
 
-    ``system`` and ``tools`` are never dropped — they're cheap to keep relative
-    to a long conversation and are required for every request. Only the
-    ``messages`` array is trimmed, and only a safe leading prefix whose
-    boundary never splits a tool_use from its tool_result (the API rejects
-    orphaned results). If no safe drop gets under budget, we drop the largest
-    safe prefix as best-effort and report remaining overage.
-    """
     msgs = body.get("messages")
     if not isinstance(msgs, list) or len(msgs) <= keep_last:
         return body
-    # One-time structural count — no whole-body serialize, no per-candidate tax.
+
     sys_tok = count_system(body.get("system"))
     tools_tok = count_tools(body.get("tools"))
     msg_total, per_msg = count_messages(msgs)
@@ -111,8 +80,8 @@ def enforce_budget(body: dict, token_budget: int, keep_last: int = 8,
         return body
 
     nb = dict(body)
-    # Prefer the SMALLEST safe drop that gets under budget (preserve context).
-    # new_total after dropping first k = total - prefix[k]  (O(1) per candidate).
+
+
     chosen = None
     for k in sorted(valid):
         if k == 0:
@@ -121,7 +90,7 @@ def enforce_budget(body: dict, token_budget: int, keep_last: int = 8,
             chosen = k
             break
     if chosen is None:
-        chosen = max(valid)  # best-effort: largest safe drop
+        chosen = max(valid)
     if chosen <= 0:
         return body
     nb["messages"] = msgs[chosen:]

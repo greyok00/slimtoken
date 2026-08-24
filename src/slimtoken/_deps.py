@@ -1,21 +1,10 @@
-"""_deps — single import surface for the optional fast dependencies.
 
-slimtoken ships with orjson, xxhash, and tiktoken (declared in pyproject
-``dependencies``), but every one of them degrades gracefully to a stdlib
-fallback if absent. Importing JSON / hashing / tokenizing through this module
-keeps the rest of the code agnostic to which backend is active.
-
-  jdumps(obj, sort_keys=False) -> bytes     # orjson -> json+encode
-  jloads(data) -> obj                        # orjson -> json
-  xhash(data: bytes) -> int                  # xxhash3_64 -> sha256 truncated
-  HAS_ORJSON / HAS_XXHASH / HAS_TIKTOKEN     # capability flags
-"""
 from __future__ import annotations
 
 import hashlib
 import json
 
-# ── JSON ─────────────────────────────────────────────────────────────────────
+
 try:
     import orjson as _orjson
     HAS_ORJSON = True
@@ -31,7 +20,7 @@ except ImportError:  # pragma: no cover - fallback when orjson not installed
 
 
 def jloads(data):
-    """Parse JSON from bytes or str."""
+
     if HAS_ORJSON:
         return _orjson.loads(data)
     if isinstance(data, (bytes, bytearray)):
@@ -39,7 +28,7 @@ def jloads(data):
     return json.loads(data)
 
 
-# ── hashing ───────────────────────────────────────────────────────────────────
+
 try:
     import xxhash as _xxhash
     HAS_XXHASH = True
@@ -53,7 +42,7 @@ except ImportError:  # pragma: no cover
         return int.from_bytes(hashlib.sha256(data).digest()[:8], "little")
 
 
-# ── tokenizer capability flag (loader lives in tokencount.py) ─────────────────
+
 try:
     import tiktoken as _tiktoken  # noqa: F401
     HAS_TIKTOKEN = True

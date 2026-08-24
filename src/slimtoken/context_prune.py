@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""context_pruner — strip low-value tokens, RAG-style retrieval, sliding-window.
 
-Token-budget context pruning. Stdlib only, no DB deps.
-Pure functions: pass in cold data + warm entries, get back a PruneResult
-with token-aware truncation.
-
-CLI:
-  python3 context_pruner.py smoke
-  python3 context_pruner.py prune --cold-file PATH --warm-file PATH [--query "..."]
-"""
 from __future__ import annotations
 
 import json
@@ -19,42 +10,42 @@ from typing import Dict, List, Optional
 
 
 def estimate_tokens(text: str) -> int:
-    """Rough token estimator: 4 chars per token."""
+
     return max(1, len(text) // 4)
 
 
-# ── Low-value patterns ────────────────────────────────────────────────────
+
 LOW_VALUE_PATTERNS = [
-    # Filler phrases
+
     r"\b(?:I think|I believe|I feel|In my opinion|It seems|It appears|Basically|Actually|Honestly)\b",
-    # Repeated punctuation
+
     r"[!?.]{3,}",
-    # Excessive whitespace (4+ newlines stripped; 3+ normalized by collapse_whitespace)
+
     r"\n{4,}",
-    # Trailing/leading whitespace on lines
+
     r"^\s+|\s+$",
 ]
 
-# Metadata fields to strip from memory entries before injection
+
 STRIP_METADATA_KEYS = {"id", "tokens_in", "tokens_out", "metadata", "platform"}
 
 
 def strip_low_value(text: str) -> str:
-    """Pass 1: Strip low-value tokens and patterns."""
+
     for pattern in LOW_VALUE_PATTERNS:
         text = re.sub(pattern, "", text, flags=re.IGNORECASE)
     return text.strip()
 
 
 def collapse_whitespace(text: str) -> str:
-    """Pass 2: Collapse excessive whitespace."""
+
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     return text.strip()
 
 
 def truncate_verbose(text: str, max_chars: int = 500) -> str:
-    """Pass 3: Truncate verbose passages, keeping first and last sentences."""
+
     if len(text) <= max_chars:
         return text
     sentences = re.split(r"(?<=[.!?])\s+", text)
@@ -63,11 +54,10 @@ def truncate_verbose(text: str, max_chars: int = 500) -> str:
     return " ".join(sentences[:2] + ["..."]) + " " + sentences[-1]
 
 
-# ── RAG-style retrieval ───────────────────────────────────────────────────
+
 def retrieve_relevant_warm(query: str, warm_entries: List[Dict],
                            max_entries: int = 10) -> List[Dict]:
-    """Pull only warm memory rows relevant to the current query.
-    Uses simple keyword overlap scoring (no LLM call needed)."""
+
     if not warm_entries or not query:
         return warm_entries[:max_entries] if warm_entries else []
     query_words = set(query.lower().split())
@@ -84,13 +74,9 @@ def retrieve_relevant_warm(query: str, warm_entries: List[Dict],
     return [e for _, e in scored[:max_entries]]
 
 
-# ── Sliding-window turn-summarization ─────────────────────────────────────
-def summarize_turns(warm_entries: List[Dict], window_size: int = 20) -> List[Dict]:
-    """Summarize older warm entries into condensed form.
 
-    Entries beyond the window are collapsed: consecutive user/assistant pairs
-    become a single summary line. Entries within the window are kept verbatim.
-    """
+def summarize_turns(warm_entries: List[Dict], window_size: int = 20) -> List[Dict]:
+
     if len(warm_entries) <= window_size:
         return warm_entries
     recent = warm_entries[-window_size:]
@@ -117,7 +103,7 @@ def summarize_turns(warm_entries: List[Dict], window_size: int = 20) -> List[Dic
     return summaries + recent
 
 
-# ── Main pipeline ─────────────────────────────────────────────────────────
+
 class PruneResult:
     def __init__(self, cold_text: str, warm_text: str, stats: Dict):
         self.cold_text = cold_text
@@ -136,7 +122,7 @@ class PruneResult:
 
 def prune_context(cold_data: Optional[Dict], warm_entries: List[Dict],
                   query: str = "", max_tokens: int = 2000) -> PruneResult:
-    """Run the full context pruning pipeline."""
+
     stats = {
         "cold_entries_before": 0,
         "cold_entries_after": 0,
@@ -146,7 +132,7 @@ def prune_context(cold_data: Optional[Dict], warm_entries: List[Dict],
         "tokens_after": 0,
     }
 
-    # --- Cold memory pruning ---
+
     cold_text = ""
     cold_entry_count = 0
     cold_entry_texts: List[str] = []
@@ -173,7 +159,7 @@ def prune_context(cold_data: Optional[Dict], warm_entries: List[Dict],
         cold_text = "\n\n".join(cold_entry_texts)
         stats["cold_entries_after"] = cold_entry_count
 
-    # --- Warm memory pruning ---
+
     if query:
         warm_entries = retrieve_relevant_warm(query, warm_entries)
     warm_entries = summarize_turns(warm_entries)
@@ -193,7 +179,7 @@ def prune_context(cold_data: Optional[Dict], warm_entries: List[Dict],
         f"{e.get('role', 'user')}: {e.get('content', '')}" for e in pruned_warm
     )
 
-    # --- Token budget enforcement ---
+
     stats["tokens_before"] = estimate_tokens(cold_text) + estimate_tokens(warm_text)
     if stats["tokens_before"] > max_tokens:
         warm_tokens = estimate_tokens(warm_text)
@@ -240,7 +226,7 @@ def prune_context(cold_data: Optional[Dict], warm_entries: List[Dict],
     return PruneResult(cold_text, warm_text, stats)
 
 
-# ── CLI ─────────────────────────────────────────────────────────────────────
+
 def _cli(argv: List[str]) -> int:
     if not argv:
         print(__doc__)
@@ -280,22 +266,22 @@ def _cli(argv: List[str]) -> int:
 
 
 def _smoke() -> int:
-    # strip_low_value
+
     s = strip_low_value("I think that basically this is actually fine.")
     assert "I think" not in s and "basically" not in s and "actually" not in s
     print(f"  strip_low_value: 'I think that basically this is actually fine.' → '{s}'")
 
-    # collapse_whitespace
+
     s = collapse_whitespace("foo\n\n\n\n\nbar  baz")
     assert "\n\n\n" not in s and "  " not in s
     print(f"  collapse_whitespace: 'foo\\n\\n\\n\\n\\nbar  baz' → '{s}'")
 
-    # truncate_verbose
+
     s = truncate_verbose("A. " + ("X" * 600) + " Z.", max_chars=100)
     assert len(s) < 200
     print(f"  truncate_verbose: 600 chars → {len(s)} chars")
 
-    # retrieve_relevant_warm
+
     warm = [
         {"role": "user", "content": "Python async best practices"},
         {"role": "assistant", "content": "Use asyncio with care"},
@@ -305,14 +291,14 @@ def _smoke() -> int:
     assert len(r) >= 1 and "async" in r[0]["content"].lower()
     print(f"  retrieve_relevant_warm: query='async python' → {len(r)} hits")
 
-    # summarize_turns
+
     big = [{"role": "user" if i % 2 == 0 else "assistant",
             "content": f"msg {i} " + ("x" * 50)} for i in range(30)]
     s = summarize_turns(big, window_size=10)
-    assert len(s) == 10 + 10  # 10 summaries + 10 recent
+    assert len(s) == 10 + 10
     print(f"  summarize_turns: 30 → {len(s)} (10 recent + 10 summaries)")
 
-    # prune_context integration
+
     cold = {
         "rules": [{"rule": "no_secrets", "value": "true"}],
         "settings": [{"key": "ctx", "value": "262144"}],

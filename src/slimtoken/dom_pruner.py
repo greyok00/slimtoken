@@ -1,21 +1,4 @@
-"""dom_pruner — strip irrelevant DOM before it hits the model.
 
-DOM pruner for web-page text extraction. Stdlib only.
-Pipeline:
-  1. Strip non-semantic tags (script, style, svg, ...)
-  2. Strip low-value sections (nav, footer, sidebar, ...)
-  3. Strip non-semantic attributes (class, id, aria-*, data-*, ...)
-  4. Collapse to visible text
-  5. Session-aware LRU cache (clear on task boundary)
-
-Backported from CortexAgent's ``lib/dom_pruner.py`` and wired into the
-pipeline as the opt-in ``dom`` stage (``SLIMTOKEN_MINIFY_DOM=1``).
-
-CLI:
-  python3 -m slimtoken.dom_pruner prune --html "<html>...</html>" --session ID [--task ID]
-  python3 -m slimtoken.dom_pruner clear-cache
-  python3 -m slimtoken.dom_pruner smoke
-"""
 from __future__ import annotations
 
 import json
@@ -25,7 +8,7 @@ from collections import OrderedDict
 from typing import Dict, List, Optional, Tuple
 
 
-# ── Session-aware LRU cache ───────────────────────────────────────────────
+
 class DOMPruneCache:
     MAX_ENTRIES = 100
 
@@ -63,7 +46,7 @@ class DOMPruneCache:
 _dom_cache = DOMPruneCache()
 
 
-# ── Strip patterns ────────────────────────────────────────────────────────
+
 STRIP_TAGS = {
     "script", "style", "noscript", "meta", "link", "svg",
     "path", "circle", "rect", "line", "polyline", "polygon",
@@ -80,16 +63,16 @@ LOW_VALUE_SELECTORS = [
     r"<footer[^>]*>.*?</footer>",
     r"<header[^>]*>.*?</header>",
     r"<aside[^>]*>.*?</aside>",
-    # Match full element by class — backreference captures the tag name
+
     r"<(\w+)[^>]*class=\"[^\"]*(?:nav|menu|footer|header|sidebar|advert|cookie|modal|overlay)[^\"]*\"[^>]*>.*?</\1>",
 ]
 
 
 def strip_tags(html: str) -> str:
     for tag in STRIP_TAGS:
-        # Container form first (removes content), then self-closing, then
-        # bare void/stray opening tags (e.g. <meta ...>, <link ...> with no
-        # `/` and no closing tag) which the first two patterns miss.
+
+
+
         html = re.sub(rf"<{tag}[^>]*>.*?</{tag}>", "", html,
                       flags=re.DOTALL | re.IGNORECASE)
         html = re.sub(rf"<{tag}[^>]*/>", "", html, flags=re.IGNORECASE)
@@ -104,7 +87,7 @@ def strip_low_value_sections(html: str) -> str:
 
 
 def strip_attributes(html: str) -> str:
-    # data-* and aria-* wildcard attributes
+
     html = re.sub(r'\s+(?:data|aria)-[a-zA-Z_-]+="[^"]*"', "", html)
     for attr in STRIP_ATTRS:
         html = re.sub(rf'\s+{attr}="[^"]*"', "", html)
@@ -112,10 +95,10 @@ def strip_attributes(html: str) -> str:
 
 
 def collapse_text(html: str) -> str:
-    # Block-level → newlines
+
     for tag in ["div", "p", "br", "li", "h[1-6]", "tr", "section", "article"]:
         html = re.sub(rf"</?{tag}[^>]*>", "\n", html, flags=re.IGNORECASE)
-    # Inline → space
+
     for tag in ["span", "a", "strong", "em", "b", "i", "u", "code"]:
         html = re.sub(r"</?{}[^>]*>".format(tag), " ", html, flags=re.IGNORECASE)
     html = html.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
@@ -125,7 +108,7 @@ def collapse_text(html: str) -> str:
     return html.strip()
 
 
-MAX_HTML_SIZE = 100 * 1024 * 1024  # 100 MB
+MAX_HTML_SIZE = 100 * 1024 * 1024
 
 
 def prune_dom(raw_html: str, session_id: str, task_id: Optional[str] = None) -> str:
@@ -161,7 +144,7 @@ def clear_dom_cache() -> None:
     _dom_cache.clear()
 
 
-# ── CLI ─────────────────────────────────────────────────────────────────────
+
 def _cli(argv: List[str]) -> int:
     if not argv:
         print(__doc__)
@@ -195,41 +178,41 @@ def _cli(argv: List[str]) -> int:
 
 
 def _smoke() -> int:
-    # Strip script/style
+
     h = "<html><head><script>alert('x')</script></head><body>hi</body></html>"
     p = prune_dom(h, "smoke_session")
     assert "alert" not in p and "hi" in p
     print(f"  strip script: 'alert' removed, 'hi' kept")
 
-    # Strip nav/footer
+
     h = "<html><body><nav>menu</nav><main>content</main><footer>copy</footer></body></html>"
     p = prune_dom(h, "smoke_session_2")
     assert "menu" not in p and "content" in p and "copy" not in p
     print(f"  strip nav/footer: 'menu'/'copy' removed, 'content' kept")
 
-    # Strip attributes (class, id, data-*)
+
     h = '<html><body><div class="foo" id="bar" data-x="y">hi</div></body></html>'
     p = prune_dom(h, "smoke_session_3")
     assert "class=" not in p and "id=" not in p and "data-" not in p
     print(f"  strip attrs: class/id/data-* removed")
 
-    # Cache hit (same session)
+
     h2 = "<html><body>different</body></html>"
     p1 = prune_dom(h2, "cached_session")
     p2 = prune_dom(h2, "cached_session")
     assert p1 == p2
-    # Verify cache is hit by mutating the cache directly
+
     cache = _dom_cache._cache
     cached = [k for k in cache if k.startswith("cached_session")]
     assert len(cached) == 1
     print(f"  cache: same session → 1 entry, repeated call returns cached")
 
-    # Clear cache
+
     clear_dom_cache()
     assert len(_dom_cache._cache) == 0
     print(f"  clear_cache: 0 entries after clear")
 
-    # Type errors
+
     try:
         prune_dom(123, "s")  # type: ignore
         assert False, "expected TypeError"

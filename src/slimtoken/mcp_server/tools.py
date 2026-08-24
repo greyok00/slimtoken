@@ -1,14 +1,4 @@
-"""tools — MCP tool schemas + thin handlers that call EXISTING pipeline functions.
 
-The MCP server is a thin adapter. Every handler imports and calls a function
-that already exists in slimtoken's core; none of them reimplement any
-optimization logic. Tool names are dotted (``slimtoken.optimize_messages``) to
-namespace them clearly in a client's tool list.
-
-Handlers return plain Python objects; :func:`to_content` wraps them as an MCP
-``tools/call`` result (a list of content blocks). On error, handlers raise or
-return an ``isError`` content block — the server converts either form.
-"""
 from __future__ import annotations
 
 import copy
@@ -27,7 +17,7 @@ from ..adapters import to_canonical, from_canonical, CANONICAL
 from ..context_presets import list_context_presets, best_context_for_tier
 
 
-# ── JSON schemas ────────────────────────────────────────────────────────────
+
 def _schema_tools() -> List[Dict[str, Any]]:
     return [
         {
@@ -176,7 +166,7 @@ def tools_list() -> List[Dict[str, Any]]:
     return _schema_tools()
 
 
-# ── handlers ────────────────────────────────────────────────────────────────
+
 def _as_body(arguments: Dict[str, Any]) -> dict:
     body: dict = {}
     if "messages" in arguments:
@@ -189,12 +179,7 @@ def _as_body(arguments: Dict[str, Any]) -> dict:
 
 
 def _canonical_body(arguments: Dict[str, Any]) -> tuple:
-    """Build the body from args and normalize to Anthropic canonical.
 
-    Returns (body, fmt). When fmt != anthropic, OpenAI/Ollama messages/tools/system
-    are converted to canonical form so the frozen pipeline can minify them; callers
-    that return a body convert back with from_canonical(body, fmt).
-    """
     fmt = arguments.get("format", "anthropic") or "anthropic"
     body = _as_body(arguments)
     if fmt != CANONICAL:
@@ -214,7 +199,7 @@ class ToolError(Exception):
 
 
 def handle(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """Dispatch a tool call. Returns a result object (NOT yet MCP-wrapped)."""
+
     if name == "slimtoken.optimize_messages":
         return _t_optimize_messages(arguments)
     if name == "slimtoken.estimate_tokens":
@@ -246,7 +231,7 @@ def _t_optimize_messages(a: Dict[str, Any]) -> Dict[str, Any]:
     tin = count_obj(body)
     out, stats = minify_request(copy.deepcopy(body), cfg)
     tout = count_obj(out)
-    # return the optimized body in the caller's format (anthropic=identity)
+
     if fmt != CANONICAL:
         out = from_canonical(out, fmt)
     return {
@@ -277,8 +262,8 @@ def _t_estimate_tokens(a: Dict[str, Any]) -> Dict[str, Any]:
     total = count_obj(body)
     sys_tok = count_system(body.get("system")) if "system" in body else 0
     tools_tok = count_tools(body.get("tools")) if "tools" in body else 0
-    # count against the (possibly converted) canonical messages so the per-msg
-    # breakdown matches what the pipeline will see
+
+
     canon_msgs = body.get("messages", msgs)
     msg_total, per_msg = count_messages(canon_msgs)
     return {
@@ -345,9 +330,9 @@ def _t_inspect_budget(a: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _t_get_config(a: Dict[str, Any]) -> Dict[str, Any]:
-    # The single config surface: build_config reads SLIMTOKEN_* env. Use the
-    # local builder (no proxy import — keeps httpx/asyncio out of the MCP
-    # process unless another tool actually needs them).
+
+
+
     cfg = build_config()
     return {"config": _cfg_dict(cfg), "source": "SLIMTOKEN_* env"}
 
@@ -370,9 +355,9 @@ def _t_high_context_presets(a: Dict[str, Any]) -> Dict[str, Any]:
     return {"presets": rows, "count": len(rows)}
 
 
-# ── MCP content wrapping ────────────────────────────────────────────────────
+
 def to_content(result: Any) -> Dict[str, Any]:
-    """Wrap a handler result as an MCP tools/call success content block."""
+
     text = json.dumps(result, ensure_ascii=False, default=str)
     return {"content": [{"type": "text", "text": text}], "isError": False}
 

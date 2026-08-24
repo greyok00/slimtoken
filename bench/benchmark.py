@@ -1,20 +1,5 @@
 #!/usr/bin/env python3
-"""benchmark — measure slimtoken's real effect.
 
-Reports, with no fabrication:
-  1. PAYLOAD REDUCTION  — tokens in vs out, per payload size, with DEFAULT config
-                          (tools+system+messages+dedup+distill all ON)
-  2. PER-STAGE BREAKDOWN
-  3. PROXY OVERHEAD    — ms the minify pipeline adds (median of N runs, vs .so)
-  4. END-TO-END        — if a llama-server backend is reachable, sends the SAME
-                          request raw vs minified and reports the model's own
-                          usage.input_tokens + wall-clock.
-
-Run:
-  python3 bench/benchmark.py                       # payload + overhead (no backend)
-  python3 bench/benchmark.py --backend http://127.0.0.1:8082   # + end-to-end
-  python3 bench/benchmark.py --json                # machine-readable
-"""
 from __future__ import annotations
 import argparse, copy, json, os, statistics, sys, time, urllib.request, urllib.error
 from pathlib import Path
@@ -22,11 +7,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from slimtoken.pipeline import minify_request, MinifyConfig
 
-# ── token estimate (OpenAI-ish: ~4 chars/token) ──────────────────────────────
+
 def tok(obj) -> int:
     return max(1, len(json.dumps(obj, separators=(",", ":"))) // 4)
 
-# ── synthetic but realistic payloads ─────────────────────────────────────────
+
 VERBOSE_SYS = (
     "<cold_memory>\nYou are a senior engineer. Follow project conventions strictly.\n"
     "Never leak personal info. Use Path.home() for paths.\n</cold_memory>\n\n\n\n"
@@ -62,8 +47,8 @@ def make_payload(size: str) -> dict:
     n_tools, n_examples, n_turns = cfg[size]
     msgs = []
     if size == "bloated":
-        # realistic bloat: the SAME big file re-read every turn (dedup target)
-        # + a long verbose assistant explanation every turn (distill target)
+
+
         big_file = "".join("line %d: implementation detail here\n" % i for i in range(400))
         long_explain = ("Let me walk through my reasoning in detail. I considered several "
                         "approaches and chose this one due to the constraints involved. " * 25)
@@ -89,15 +74,15 @@ def make_payload(size: str) -> dict:
     msgs.append({"role": "user", "content": "now do the final task\n\n\n\nplease proceed"})
     return {"system": VERBOSE_SYS, "tools": [make_tool(i, n_examples) for i in range(n_tools)], "messages": msgs}
 
-# ── 1. payload reduction (DEFAULT config = all stages ON) ────────────────────
+
 def bench_payload():
     rows = []
     for size in ("small", "medium", "large", "bloated"):
         body = make_payload(size)
         tin = tok(body)
-        out, _ = minify_request(copy.deepcopy(body), MinifyConfig())  # all defaults
+        out, _ = minify_request(copy.deepcopy(body), MinifyConfig())
         tdef = tok(out)
-        # also a no-distill/no-dedup baseline (tools+system+messages only) for contrast
+
         base, _ = minify_request(copy.deepcopy(body),
                                  MinifyConfig(enabled_stages={"tools", "system", "messages"},
                                               token_budget=0))
@@ -107,7 +92,7 @@ def bench_payload():
                      "base_pct": 100 * (tin - tbase) / tin})
     return rows
 
-# ── 2. per-stage breakdown (medium payload) ──────────────────────────────────
+
 def bench_stages():
     body = make_payload("medium")
     tin = tok(body)
@@ -123,11 +108,11 @@ def bench_stages():
     out.insert(0, {"stage": "(original)", "tokens": tin, "saved": 0, "pct": 0.0})
     return out
 
-# ── 3. proxy overhead (minify pipeline only, large payload, vs .so) ─────────
+
 def bench_overhead(runs=50):
     body = make_payload("large")
     cfg = MinifyConfig()
-    minify_request(copy.deepcopy(body), cfg)  # warm
+    minify_request(copy.deepcopy(body), cfg)
     times = []
     for _ in range(runs):
         t0 = time.perf_counter()
@@ -137,13 +122,9 @@ def bench_overhead(runs=50):
             "p95_ms": round(sorted(times)[int(len(times) * 0.95) - 1], 3),
             "mean_ms": round(statistics.mean(times), 3)}
 
-# ── 4. proxy latency breakdown t0-t4 (proxy work vs model generation) ────────
+
 def bench_latency(runs=20):
-    """Spawn the proxy against a local echo upstream and read the t0-t4 buckets
-    from /metrics. Separates proxy-side work (ingress + optimize) from
-    upstream-side work (ttft + generation). The echo upstream makes the model
-    buckets tiny — the point is to show the instrumentation + proxy overhead,
-    not to model real generation latency."""
+
     import subprocess, threading, http.server, socketserver, socket
     import urllib.request as _ur
 
@@ -181,7 +162,7 @@ def bench_latency(runs=20):
         if not _wait_port(proxy_port):
             return {"error": "proxy did not start"}
         body = json.dumps(make_payload("large")).encode()
-        # warm (first request loads the tokenizer encoding — exclude from timing)
+
         s = socket.create_connection(("127.0.0.1", proxy_port), timeout=5)
         s.sendall(f"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Length: {len(body)}\r\n\r\n".encode() + body)
         try:
@@ -203,10 +184,10 @@ def bench_latency(runs=20):
             return {"error": "no latency samples"}
         return {
             "runs": runs, "samples": n,
-            # proxy-side (what slimtoken controls)
+
             "ingress_s": round(L["proxy_ingress"] / n, 5),
             "optimize_s": round(L["optimize"] / n, 5),
-            # upstream-side (model generation — tiny for the echo upstream)
+
             "ttft_s": round(L["ttft"] / n, 5),
             "generation_s": round(L["generation"] / n, 5),
             "total_s": round(L["total"] / n, 5),
@@ -219,7 +200,7 @@ def bench_latency(runs=20):
         up.shutdown()
 
 
-# ── 5. end-to-end through the REAL proxy (needs a live llama-server) ─────────
+
 def _post(url, body_bytes, timeout=60):
     req = urllib.request.Request(url, data=body_bytes, method="POST",
                                  headers={"Content-Type": "application/json"})
@@ -260,21 +241,17 @@ def _wait_port(port, tries=40):
     return False
 
 def bench_e2e(backend: str, n: int = 5):
-    """Send the SAME Anthropic payload (with tools) two ways:
-       (a) RAW       — direct to backend /v1/messages
-       (b) OPTIMIZED — through the proxy, which minifies then forwards
-       Compare the model's own reported input_tokens + wall-clock.
-       A unique nonce per request defeats llama-server's prefix cache."""
+
     import subprocess
     backend = backend.rstrip("/")
     proxy_port = 8287
     env = dict(os.environ)
     env["SLIMTOKEN_PORT"] = str(proxy_port)
     env["SLIMTOKEN_UPSTREAM"] = backend
-    env["SLIMTOKEN_MINIFY_BUDGET"] = "0"  # keep full payload; measure minify not pruning
+    env["SLIMTOKEN_MINIFY_BUDGET"] = "0"
     src_dir = str(Path(__file__).resolve().parent.parent / "src")
     env["PYTHONPATH"] = src_dir + ":" + env.get("PYTHONPATH", "")
-    # spawn the proxy as a subprocess
+
     proc = subprocess.Popen([sys.executable, "-u", "-c",
                              "from slimtoken.proxy import main; main()"],
                             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -333,7 +310,7 @@ def bench_e2e(backend: str, n: int = 5):
         except Exception:
             proc.kill()
 
-# ── reporting ────────────────────────────────────────────────────────────────
+
 def fmt_table(headers, rows):
     w = [max(len(str(h)), *(len(str(r[i])) for r in rows)) for i, h in enumerate(headers)]
     sep = "+".join("-" * (w[i] + 2) for i in range(len(headers)))
