@@ -34,8 +34,13 @@ representative payloads. Run them yourself with `slimtoken presets --measure`.
 ### Input — the always-on pipeline
 
 The request-side pipeline (tools · system · messages · dedup · distill ·
-tool_compress) runs on every request by default. Reduction scales with how much
-waste the session carries:
+budget) runs on every request by default and is **lossless**: it only minifies
+whitespace, stubs byte-identical duplicate tool results, distills *assistant*
+prose beyond the keep-last window, and hard-prunes only when the budget is
+exceeded. Old **user** turns (requirements, schemas, constraints) are preserved
+verbatim. The lossy stages — `tool_compress` (type-specific tool-result
+reduction) and `minify_dom` (HTML pruning) — are **opt-in**, off by default.
+Reduction scales with how much waste the session carries:
 
 | Scenario | Before | After | Reduction |
 |----------|-------:|------:|----------:|
@@ -146,10 +151,10 @@ sequenceDiagram
 | 📋 system | Collapse whitespace and duplicate banner lines outside code fences; preserve `<tag>` markers and fenced code byte-for-byte. | no |
 | 💬 messages | Collapse blank-line runs and trailing whitespace in text blocks; pass `tool_use` / `tool_result` / `image` blocks untouched. | no |
 | 🔄 dedup | Collapse repeated `tool_result` contents; latest kept verbatim, older copies stubbed. | no* |
-| 📝 distill | Truncate old assistant prose beyond the last `SLIMTOKEN_KEEP_LAST` (4) turns to 160 chars/turn. Fence-aware, preserves tool blocks, no model call. | old turns only |
+| 📝 distill | Truncate old **assistant** prose beyond the last `SLIMTOKEN_KEEP_LAST` (4) turns to 160 chars/turn. Old *user* turns are preserved verbatim unless `SLIMTOKEN_DISTILL_INCLUDE_USER=1`. Fence-aware, preserves tool blocks, no model call. | assistant old turns only |
 | 🎯 budget | Hard token cap (`SLIMTOKEN_MINIFY_BUDGET`, 131072); drops a leading prefix pair-safely — only when over budget. | drops oldest |
 | 🌐 dom *(opt-in)* | `SLIMTOKEN_MINIFY_DOM=1` — prune large HTML `tool_result` payloads (strip script/style/svg, nav/footer/sidebar, `class`/`id`/`data-*`/`aria-*` attrs, collapse to text). Session-aware LRU cache. | yes |
-| 🗜️ tool_compress | Type-specific reduction of large `tool_result` content (directory listings, git output, logs, JSON, source) + a `[slimtoken-compressed]` header. | yes |
+| 🗜️ tool_compress *(opt-in)* | `SLIMTOKEN_TOOL_COMPRESS=1` — type-specific reduction of large `tool_result` content (directory listings, git output, logs, JSON, source) + a `[slimtoken-compressed]` header. JSON keeps head + tail records with an omission marker (never drops a tail record); source keeps head + tail lines. Off by default. | yes |
 
 \* dedup is lossless in practice — the latest copy is always kept verbatim; only
 stale duplicates are stubbed.
@@ -336,8 +341,12 @@ env switch. The two things you might actually want to do:
 
 - **Turn it all off** — `SLIMTOKEN_MINIFY=0` (raw passthrough; for debugging or
   when the model must see input verbatim).
-- **Turn off one lossy stage** — e.g. `SLIMTOKEN_MINIFY_DISTILL=0` to keep old
-  turns verbatim, or `SLIMTOKEN_TOOL_COMPRESS=0` to keep tool results verbatim.
+- **Preserve old user turns** — the default already keeps them verbatim; the
+  lossless pipeline never distills them. Only `SLIMTOKEN_DISTILL_INCLUDE_USER=1`
+  opts into compressing them.
+- **Opt into a lossy stage** — `SLIMTOKEN_TOOL_COMPRESS=1` (type-specific
+  tool-result reduction) or `SLIMTOKEN_MINIFY_DOM=1` (HTML pruning). Both are
+  OFF by default because they are lossy.
 
 See the [Config](#config) table for the full knob list. The single config
 surface (`build_config`) is shared by the proxy, CLI, MCP server, and skill.
@@ -539,8 +548,9 @@ Defaults are the recommended values. Set any to `0` to disable.
 | `SLIMTOKEN_KEEP_LAST` | 4 | recent turns kept verbatim by distill/budget |
 | `SLIMTOKEN_DEDUP_MIN_CHARS` | 200 | only dedup tool results at least this long |
 | `SLIMTOKEN_DISTILL_MAX_CHARS` | 160 | max chars per distilled old turn |
+| `SLIMTOKEN_DISTILL_INCLUDE_USER` | 0 | 1 = also distill old *user* turns (default keeps them verbatim) |
 | `SLIMTOKEN_MINIFY_TOOL_SKIP` | _(none)_ | comma-list of tool names to never minify |
-| `SLIMTOKEN_TOOL_COMPRESS` | 1 | lossy type-specific tool-result compression |
+| `SLIMTOKEN_TOOL_COMPRESS` | 0 | lossy type-specific tool-result compression (opt-in) |
 | `SLIMTOKEN_MINIFY_DOM` | 0 | lossy opt-in: prune large HTML tool_results |
 | `SLIMTOKEN_MAX_TOKENS` | _(unset)_ | output-token cap (enables output filter) |
 | `SLIMTOKEN_STOP` | _(unset)_ | comma-joined stop sequences (enables output filter) |

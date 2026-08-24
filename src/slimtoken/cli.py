@@ -104,13 +104,23 @@ def cmd_uninstall(args):
                       "", text, flags=re.DOTALL)
         rc.write_text(text)
         print(f"removed slimtoken block from {rc}")
-    # restore prior BASE_URL if we have it
+    # Restore prior BASE_URL — but ONLY if no unmarked ANTHROPIC_BASE_URL line
+    # already survives. Install only ADDS the marker block; it never removes a
+    # pre-existing unmarked ``export ANTHROPIC_BASE_URL=...`` line. If that line
+    # is still present, blindly appending the prior value would duplicate it.
     if PREV_ENV.exists():
         prior = PREV_ENV.read_text().strip()
-        if prior:
+        has_unmarked = any(
+            "ANTHROPIC_BASE_URL=" in ln and MARKER_BEGIN not in ln and MARKER_END not in ln
+            for ln in text.splitlines())
+        if prior and has_unmarked:
+            print(f"existing ANTHROPIC_BASE_URL left in place (no duplicate written)")
+        elif prior:
             with open(rc, "a") as f:
                 f.write(f"\nexport ANTHROPIC_BASE_URL={prior}\n")
             print(f"restored prior ANTHROPIC_BASE_URL={prior}")
+        else:
+            print("ANTHROPIC_BASE_URL now unset (Claude Code uses its default).")
         PREV_ENV.unlink()
     else:
         print("ANTHROPIC_BASE_URL now unset (Claude Code uses its default).")

@@ -151,9 +151,26 @@ def to_canonical(body: dict, fmt: str) -> dict:
 
         if role == "user":
             if isinstance(content, list):
-                texts = [b.get("text", "") for b in content
-                         if isinstance(b, dict) and "text" in b]
-                canon_msgs.append({"role": "user", "content": "".join(texts)})
+                # Keep text blocks AND any non-text (image / audio / file)
+                # blocks verbatim — never drop multimodal input. The pipeline
+                # only minifies text/tool blocks, so non-text blocks pass
+                # through the canonical form untouched and survive the round trip.
+                texts, extras = [], []
+                for b in content:
+                    if not isinstance(b, dict):
+                        continue
+                    if b.get("type") in (None, "text") and isinstance(b.get("text"), str):
+                        texts.append(b["text"])
+                    else:
+                        extras.append(b)
+                if extras:
+                    blocks = []
+                    if texts:
+                        blocks.append({"type": "text", "text": "".join(texts)})
+                    blocks.extend(extras)
+                    canon_msgs.append({"role": "user", "content": blocks})
+                elif texts:
+                    canon_msgs.append({"role": "user", "content": "".join(texts)})
             else:
                 canon_msgs.append({"role": "user", "content": _flatten_text(content)})
             continue
@@ -215,7 +232,7 @@ def from_canonical(body: dict, fmt: str) -> dict:
 
         if role == "user":
             if isinstance(content, list):
-                text_parts, tool_results = [], []
+                text_parts, tool_results, extras = [], [], []
                 for b in content:
                     if not isinstance(b, dict):
                         continue
@@ -229,10 +246,19 @@ def from_canonical(body: dict, fmt: str) -> dict:
                             "tool_call_id": b.get("tool_use_id", ""),
                             "content": tc if isinstance(tc, str) else str(tc),
                         })
-                    elif b.get("type") == "text" or "text" in b:
+                    elif b.get("type") in (None, "text") or "text" in b:
                         text_parts.append(b.get("text", ""))
+                    else:
+                        # non-text blocks (image / audio / file) pass through verbatim
+                        extras.append(b)
                 msgs_out.extend(tool_results)
-                if text_parts:
+                if extras:
+                    # user message stays a block list so multimodal content survives
+                    blocks = ([{"type": "text", "text": "".join(text_parts)}]
+                              if text_parts else [])
+                    blocks.extend(extras)
+                    msgs_out.append({"role": "user", "content": blocks})
+                elif text_parts:
                     msgs_out.append({"role": "user", "content": "".join(text_parts)})
             else:
                 msgs_out.append({"role": "user",

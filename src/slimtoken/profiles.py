@@ -42,10 +42,17 @@ def build_config() -> MinifyConfig:
     """The always-on aggressive config, tuned via ``SLIMTOKEN_*`` env knobs.
 
     Stages default ON; ``SLIMTOKEN_MINIFY_<STAGE>=0`` disables one stage
-    (e.g. ``SLIMTOKEN_MINIFY_DISTILL=0``, ``SLIMTOKEN_MINIFY_TOOL_COMPRESS=0``).
-    ``SLIMTOKEN_MINIFY=0`` disables the whole pipeline (passthrough).
+    (e.g. ``SLIMTOKEN_MINIFY_DISTILL=0``). ``SLIMTOKEN_MINIFY=0`` disables the
+    whole pipeline (passthrough).
 
-    Defaults: budget 131072, keep_last 4, distill_max_chars 160, tool_compress ON.
+    The pipeline is lossless by default: minify, dedup, assistant-only distill,
+    and the budget backstop never remove content the model still needs. LOSSY
+    stages are opt-in — ``SLIMTOKEN_TOOL_COMPRESS=1`` (type-specific tool_result
+    compression), ``SLIMTOKEN_MINIFY_DOM=1`` (HTML pruning). Old user turns are
+    preserved by default; ``SLIMTOKEN_DISTILL_INCLUDE_USER=1`` opts into
+    distilling them too.
+
+    Defaults: budget 131072, keep_last 4, distill_max_chars 160, tool_compress OFF.
     """
     if not _bool("SLIMTOKEN_MINIFY", True):
         return MinifyConfig(enabled_stages=set(), tool_skip=_env_tool_skip())
@@ -57,7 +64,8 @@ def build_config() -> MinifyConfig:
         keep_last=_int("SLIMTOKEN_KEEP_LAST", 4),
         dedup_min_chars=_int("SLIMTOKEN_DEDUP_MIN_CHARS", 200),
         distill_max_chars=_int("SLIMTOKEN_DISTILL_MAX_CHARS", 160),
-        tool_compress=_bool("SLIMTOKEN_TOOL_COMPRESS", True),
+        distill_include_user=_bool("SLIMTOKEN_DISTILL_INCLUDE_USER", False),
+        tool_compress=_bool("SLIMTOKEN_TOOL_COMPRESS", False),
         minify_dom=_bool("SLIMTOKEN_MINIFY_DOM", False),
     )
 

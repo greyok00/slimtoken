@@ -825,6 +825,199 @@ def test_adapters():
     check("pair-safety reverse: two role:tool restored", len(tool2) == 2)
 
 
+# ── Audit #1: old USER turns preserved by distillation ───────────────────────
+def test_distill_user_preserved():
+    """Audit #1: distillation must NOT rewrite old user messages by default.
+    The requirements/DB lines the audit reported missing survive verbatim;
+    only assistant prose is distilled. distill_include_user opts in."""
+    req = ("Requirement 1: connect to the postgres DB.\n"
+           "Requirement 2: run the migration on schema public.\n"
+           "Requirement 3: keep all rows in the audit table.\n"
+           "Requirement 4: export results to csv.\n" * 20)  # long → distillable
+    msgs = []
+    for _i in range(5):
+        msgs.append({"role": "user", "content": req})
+        msgs.append({"role": "assistant",
+                     "content": "I will explain my approach in very great detail. " * 40})
+    msgs.append({"role": "user", "content": "final"})
+
+    # 1. standalone default: assistant distilled, user requirements kept whole
+    stats = {}
+    out = distill_old_turns(copy.deepcopy(msgs), stats, keep_last=4, max_chars=160)
+    user_full = sum(1 for m in out
+                    if m.get("role") == "user" and isinstance(m.get("content"), str)
+                    and "Requirement 1:" in m["content"] and "Requirement 4:" in m["content"])
+    asst_distilled = sum(1 for m in out
+                         if m.get("role") == "assistant" and isinstance(m.get("content"), str)
+                         and "distilled" in m["content"])
+    check("audit1 default: old user requirements survive", user_full >= 4, f"user_full={user_full}")
+    check("audit1 default: assistant prose distilled", asst_distilled >= 2, f"asst={asst_distilled}")
+
+    # 2. standalone opt-in include_user=True compresses user turns too
+    stats2 = {}
+    out2 = distill_old_turns(copy.deepcopy(msgs), stats2, keep_last=4, max_chars=160,
+                             include_user=True)
+    user_distilled = sum(1 for m in out2
+                         if m.get("role") == "user" and isinstance(m.get("content"), str)
+                         and "distilled" in m["content"])
+    check("audit1 opt-in compresses user turns", user_distilled >= 2, f"{user_distilled}")
+
+    # 3. pipeline default: user requirements survive a real minify run
+    body = {"system": "s", "messages": msgs}
+    nb, _ = minify_request(copy.deepcopy(body), MinifyConfig(keep_last=4))
+    user_req = sum(1 for m in nb["messages"]
+                   if m.get("role") == "user" and isinstance(m.get("content"), str)
+                   and "Requirement 4:" in m["content"])
+    check("audit1 pipeline default: old user requirements survive", user_req >= 4, f"{user_req}")
+
+    # 4. pipeline opt-in compresses user turns
+    body2 = {"system": "s", "messages": msgs}
+    nb2, _ = minify_request(copy.deepcopy(body2), MinifyConfig(keep_last=4,
+                                                               distill_include_user=True))
+    user_dist2 = sum(1 for m in nb2["messages"]
+                     if m.get("role") == "user" and isinstance(m.get("content"), str)
+                     and "distilled" in m["content"])
+    check("audit1 pipeline opt-in compresses user turns", user_dist2 >= 2, f"{user_dist2}")
+
+
+# ── Audit #2: critical JSON + source tail recall under compression ───────────
+def test_json_tail_recall():
+    """Audit #2: a critical record near the tail of a big JSON array must
+    survive compression — no blind ``compact[:4000]`` mid-record cut."""
+    from slimtoken.tool_result_compress import compress_text
+    import json as _jj
+    records = [{"id": i, "payload": "x" * 80} for i in range(500)]
+    pretty = _jj.dumps(records, indent=2)  # far over the cap after compaction
+    c = compress_text(pretty)
+    check("audit2 json compressed", c is not None)
+    body = c.split("json: ", 1)[1]
+    check("audit2 json tail record survives", '"id":499' in body, "TAIL LOST")
+    check("audit2 json head record survives", '"id":0' in body and '"id":2' in body)
+    check("audit2 json tail slice intact", '"id":497' in body and '"id":498' in body)
+    check("audit2 json omission marker present", "omitted" in body)
+    check("audit2 json not full dump", '"id":250' not in body)
+
+    # a JSON that's large enough to compress but whose compacted form fits the
+    # cap is emitted WHOLE — zero loss, no truncation, no omission marker
+    mid = _jj.dumps([{"id": i, "k": "v"} for i in range(30)], indent=2)
+    cm = compress_text(mid)
+    check("audit2 mid json emitted whole", cm is not None
+          and '"id":29' in cm and "omitted" not in cm)
+
+    # tiny JSON is under the compression floor — untouched, preserved verbatim
+    tiny = _jj.dumps([{"id": 1}, {"id": 2}], indent=2)
+    ct = compress_text(tiny)
+    check("audit2 tiny json untouched (zero loss)", ct is None)
+
+
+def test_source_tail_recall():
+    """Audit #2: the tail of a source dump (a critical function near the end)
+    survives compression instead of being truncated away."""
+    from slimtoken.tool_result_compress import compress_text
+    lines = []
+    for i in range(200):
+        lines.append(f"def func_{i}():")
+        lines.append(f"    return {i}")
+    src = "\n".join(lines)
+    c = compress_text(src)
+    check("audit2 source compressed", c is not None and "source:" in c)
+    check("audit2 source tail survives", "func_199" in c, "TAIL LOST")
+    check("audit2 source head survives", "func_0" in c)
+    check("audit2 source omission marker", "omitted" in c)
+    check("audit2 source not full dump", "func_100" not in c)
+
+
+# ── Audit #3: OpenAI multimodal + SSE delta.content ──────────────────────────
+def test_openai_multimodal_roundtrip():
+    """Audit #3: image/audio (non-text) blocks survive the OpenAI ↔ canonical
+    round trip instead of being dropped."""
+    from slimtoken import adapters
+    body = {"messages": [
+        {"role": "user", "content": [
+            {"type": "text", "text": "describe this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+            {"type": "input_audio", "input_audio": {"data": "BBB", "format": "wav"}},
+        ]},
+    ]}
+    canon = adapters.to_canonical(body, "openai")
+    cj = json.dumps(canon)
+    check("audit3 canon keeps image", "image_url" in cj and "data:image/png;base64,AAA" in cj)
+    check("audit3 canon keeps audio", "input_audio" in cj and "BBB" in cj)
+    check("audit3 canon keeps text", "describe this" in cj)
+    back = adapters.from_canonical(canon, "openai")
+    bj = json.dumps(back)
+    check("audit3 round-trip keeps image", "image_url" in bj and "data:image/png;base64,AAA" in bj)
+    check("audit3 round-trip keeps audio", "input_audio" in bj and "BBB" in bj)
+    check("audit3 round-trip keeps text", "describe this" in bj)
+
+
+def test_output_filter_openai_delta():
+    """Audit #3: the output filter handles OpenAI streaming — delta.content as
+    a string AND as a list of text blocks (not just Anthropic delta.text)."""
+    from slimtoken.output_filter import OutputFilter
+
+    # 1. OpenAI string delta.content, max_tokens cap
+    f = OutputFilter(max_tokens=3, stops=[], filler=False)
+    frame = ('data: ' + json.dumps(
+        {"choices": [{"delta": {"content": "apple banana cherry date"}}]}) + '\n\n').encode()
+    out = f.feed(frame)
+    line = [l for l in out.decode().split("\n") if l.startswith("data:")][0]
+    obj = json.loads(line[5:].strip())
+    content = obj["choices"][0]["delta"]["content"]
+    check("audit3 openai string delta.content truncated",
+          isinstance(content, str)
+          and "apple banana cherry date".startswith(content)
+          and len(content) < len("apple banana cherry date"))
+    check("audit3 openai string filter closed", f._closed)
+
+    # 2. OpenAI list delta.content, stop sequence
+    f = OutputFilter(max_tokens=None, stops=["STOP"], filler=False)
+    frame = ('data: ' + json.dumps({"choices": [{"delta": {"content": [
+                {"type": "text", "text": "keep me"},
+                {"type": "text", "text": " STOP rest"}]}}]}) + '\n\n').encode()
+    out = f.feed(frame)
+    line = [l for l in out.decode().split("\n") if l.startswith("data:")][0]
+    obj = json.loads(line[5:].strip())
+    blocks = obj["choices"][0]["delta"]["content"]
+    texts = "".join(b.get("text", "") for b in blocks if isinstance(b, dict))
+    check("audit3 openai block-list stop truncates", "STOP" not in texts and "keep me" in texts)
+    check("audit3 openai block-list stop closes", f._closed)
+
+    # 3. non-text delta (tool_calls / reasoning) passes through untouched
+    f = OutputFilter(filler=True)
+    frame = ('data: ' + json.dumps({"choices": [{"delta": {
+        "tool_calls": [{"id": "t", "type": "function",
+                        "function": {"name": "ls", "arguments": "{}"}}]}}]}) + '\n\n').encode()
+    out = f.feed(frame)
+    check("audit3 openai non-text delta passthrough", out == frame)
+
+
+# ── Audit #4: uninstall must not duplicate ANTHROPIC_BASE_URL ────────────────
+def test_uninstall_no_duplicate():
+    """Audit #4: uninstall must NOT append a second ANTHROPIC_BASE_URL when a
+    pre-existing unmarked line already survives next to the marker block."""
+    import importlib
+    cli = importlib.import_module("slimtoken.cli")
+    with tempfile.TemporaryDirectory() as td:
+        rc = Path(td) / ".bashrc"
+        rc.write_text("export FOO=bar\nexport ANTHROPIC_BASE_URL=http://127.0.0.1:9000\n")
+        os.environ["SLIMTOKEN_STATE_DIR"] = str(Path(td) / "state")
+        cli.STATE_DIR = Path(td) / "state"
+        cli.PREV_ENV = Path(td) / "state" / "prev_env"
+        cli.main(["install", "--rc", str(rc)])
+        text = rc.read_text()
+        check("audit4 install keeps pre-existing BASE_URL",
+              "ANTHROPIC_BASE_URL=http://127.0.0.1:9000" in text)
+        check("audit4 install added marker", cli.MARKER_BEGIN in text)
+        cli.main(["uninstall", "--rc", str(rc)])
+        text = rc.read_text()
+        check("audit4 uninstall removed marker", cli.MARKER_BEGIN not in text)
+        n = text.count("ANTHROPIC_BASE_URL=")
+        check("audit4 uninstall no duplicate BASE_URL", n == 1, f"count={n}")
+        check("audit4 uninstall keeps original value",
+              "ANTHROPIC_BASE_URL=http://127.0.0.1:9000" in text)
+
+
 # ── context_presets (high-context VRAM tiers, dense + MoE) ───────────────────
 def test_context_presets():
     from slimtoken import context_presets as cp
@@ -877,7 +1070,10 @@ def main():
              test_proxy_e2e, test_tokencount_no_whole_serialize,
              test_single_pass_equivalence, test_proxy_metrics_and_fastpath,
              test_tool_result_compress, test_output_filter,
-             test_adapters, test_context_presets]
+             test_adapters, test_distill_user_preserved, test_json_tail_recall,
+             test_source_tail_recall, test_openai_multimodal_roundtrip,
+             test_output_filter_openai_delta, test_uninstall_no_duplicate,
+             test_context_presets]
     print(f"slimtoken v{__version__} — running {len(tests)} test groups")
     for t in tests:
         print(f"\n[{t.__name__}]")
