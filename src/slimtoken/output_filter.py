@@ -149,6 +149,38 @@ class OutputFilter:
         return out
 
     # ── internals ────────────────────────────────────────────────────────────
+    @staticmethod
+    def _text_refs(obj: dict):
+        """Locate the text-delta value(s) in a frame, across Anthropic AND
+        OpenAI streaming shapes. Returns a list of (container, key) pairs whose
+        value is a text string.
+
+        - Anthropic: ``delta.text`` (string).
+        - OpenAI: ``choices[0].delta.content`` — a string OR a list of
+          ``{"type":"text","text":...}`` blocks.
+        """
+        refs = []
+        delta = obj.get("delta")
+        if isinstance(delta, dict) and isinstance(delta.get("text"), str):
+            refs.append((delta, "text"))
+        choices = obj.get("choices")
+        if isinstance(choices, list):
+            for ch in choices:
+                if not isinstance(ch, dict):
+                    continue
+                d = ch.get("delta")
+                if not isinstance(d, dict):
+                    continue
+                content = d.get("content")
+                if isinstance(content, str):
+                    refs.append((d, "content"))
+                elif isinstance(content, list):
+                    for block in content:
+                        if (isinstance(block, dict) and block.get("type") == "text"
+                                and isinstance(block.get("text"), str)):
+                            refs.append((block, "text"))
+        return refs
+
     def _process_frame(self, frame: bytes) -> bytes:
         """Process one complete SSE frame. Returns bytes to emit."""
         text = frame.decode("utf-8", errors="replace")
@@ -169,17 +201,24 @@ class OutputFilter:
             return frame
         if not isinstance(obj, dict):
             return frame
-        delta = obj.get("delta")
-        if not isinstance(delta, dict) or not isinstance(delta.get("text"), str):
-            return frame  # only text deltas are filtered
-        text_chunk = delta["text"]
-        new_text, stop_hit = self._filter_text(text_chunk)
-        if new_text == text_chunk and not stop_hit:
+        refs = self._text_refs(obj)
+        if not refs:
+            return frame  # no text delta (e.g. tool_use, reasoning, role frame)
+        changed = False
+        stop_hit = False
+        for container, key in refs:
+            cur = container[key]
+            new_text, hit = self._filter_text(cur)
+            if new_text != cur:
+                container[key] = new_text
+                changed = True
+            if hit:
+                stop_hit = True
+                break
+        if not changed and not stop_hit:
             return frame  # unchanged
-        if not new_text and not stop_hit:
-            return b""  # drop the frame entirely
-        # rebuild the frame with the filtered text
-        delta["text"] = new_text
+        if changed and not stop_hit and all(container[key] == "" for container, key in refs):
+            return b""  # every text delta emptied (e.g. buffered filler) — drop frame
         new_obj = json.dumps(obj, separators=(",", ":"))
         # preserve any non-data lines, replace the data line
         lines = text.split("\n")

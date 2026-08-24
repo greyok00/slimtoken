@@ -19,15 +19,18 @@ Stages (each one independently callable):
         claim survives; only filler and duplicates are removed.
 
     shrink_prompt(prompt, max_tokens=80, mode='balanced')
-        Rank sentences by a TextRank-lite score (overlap with the whole
-        prompt + length), keep the top-N until the word budget is met,
-        re-emit in original order. Modes:
+        Sentence-prune to a word budget. ALWAYS keeps the first sentence (the
+        core ask) plus any imperative / constraint sentences, then fills the
+        rest of the budget from the highest-scoring remaining sentences and
+        re-emits in original order. Modes:
           - 'aggressive' ≈ 20 words (~ caveman)
           - 'balanced'   ≈ 50 words (~ tight business prose)
           - 'preserve'   ≈ 150 words (~ light cleanup)
-        The output is *constructed from sentences that already appear in
-        the input* — there is no semantic rephrasing, so intent cannot
-        drift. Use it when you want a known-good CPU fallback.
+        NOTE: shrink is LOSSY by design — for prompts that fit, it drops
+        lower-priority sentences. It is best for single-ask prompts. For
+        prompts with multiple INDEPENDENT constraints, prefer reframe_prompt
+        / minify_prompt (lossless) or pass a large max_tokens; shrinking can
+        drop a constraint sentence once the budget runs out.
 
     minify_prompt(prompt)
         Character-level squeeze: collapse whitespace, drop redundant
@@ -218,14 +221,41 @@ def _split_sentences(text: str) -> List[str]:
 def _rank_score(sent: str, query_words: set) -> int:
     """TextRank-lite: words shared with the prompt + sentence length.
 
-    This is a CPU fallback for environments that can't use a small LLM
-    for paraphrasing. It's *deterministic* and *intent-preserving* — the
-    output is built from sentences that already appear in the input, in
-    the user's own words.
+    Deterministic CPU ranking. The output is built from sentences that already
+    appear in the input (the user's own words) — but shrink is still LOSSY:
+    sentences below the budget line are dropped, so "intent preserved" is only
+    guaranteed for the sentences that survive, never for the whole prompt.
     """
     words = _WORD_RE.findall(sent.lower())
     overlap = sum(2 for w in words if w in query_words)
     return overlap + len(words)
+
+
+# Sentences that read as commands or carry a hard constraint. These are the
+# parts a shrinking must NOT drop: the audit's exact complaint was that shrink
+# loses independent constraints. We keep them before any scored filler.
+_IMPERATIVE_PREFIXES = (
+    "plan", "check", "scan", "audit", "verify", "ensure", "make", "create",
+    "write", "build", "add", "fix", "update", "change", "remove", "delete",
+    "run", "execute", "start", "stop", "test", "review", "find", "locate",
+    "compare", "analyze", "investigate", "search", "list", "show", "give",
+    "tell", "explain", "summarize", "generate", "implement", "refactor",
+    "debug", "convert", "translate", "install", "configure", "set", "reset",
+    "don't", "dont", "do not", "never", "always", "must", "please",
+)
+_CONSTRAINT_MARKERS = (
+    "must", "ensure", "keep", "do not", "don't", "dont", "never", "always",
+    "must not", "require", "required", "needs to", "has to", "unless",
+    "except", "preserve", "retain", "verbatim", "exactly", "critical",
+)
+
+
+def _is_imperative_or_constraint(sent: str) -> bool:
+    """True if a sentence leads with a command verb or carries a hard constraint."""
+    low = sent.lower().strip()
+    if any(low.startswith(p) for p in _IMPERATIVE_PREFIXES):
+        return True
+    return any(m in low for m in _CONSTRAINT_MARKERS)
 
 
 shrink_modes: Dict[str, int] = {
@@ -237,7 +267,20 @@ shrink_modes: Dict[str, int] = {
 
 def shrink_prompt(prompt: str, max_tokens: Optional[int] = None,
                   mode: str = "balanced") -> str:
-    """Rank sentences by relevance + length and keep the top-N.
+    """Prune to a word budget, protecting the core ask and any constraints.
+
+    Selection order (all emitted back in original order):
+      1. If the whole (reframed) prompt already fits the budget, return it
+         UNCHANGED — lossless short-circuit for multi-constraint prompts that
+         fit.
+      2. The FIRST sentence is always kept — it carries the core ask.
+      3. Imperative / constraint sentences (commands, "must/ensure/do not…")
+         are kept next, before any scored filler.
+      4. Remaining budget is filled from the highest-scoring sentences.
+
+    Shrink is still LOSSY once the budget runs out: lower-priority sentences
+    are dropped. That is by design and it is why the module doc warns against
+    shrinking prompts with many independent constraints into a tiny budget.
 
     Args:
         prompt: the input prompt.
@@ -248,8 +291,8 @@ def shrink_prompt(prompt: str, max_tokens: Optional[int] = None,
 
     Returns:
         A shorter prompt made from sentences that already exist in the
-        input — no LLM, no semantic drift, no hallucinated details.
-        Falls back to the reframed text if ranking yields nothing.
+        input — no LLM, no hallucinated details. The lead instruction and any
+        imperative/constraint sentences survive whenever they fit the budget.
     """
     if not prompt:
         return prompt
@@ -262,31 +305,46 @@ def shrink_prompt(prompt: str, max_tokens: Optional[int] = None,
         candidates = _split_sentences(prompt)
     if not candidates:
         return prompt
+    if len(candidates) == 1:
+        return candidates[0]
+
+    # Lossless short-circuit: the cleaned prompt already fits — keep every
+    # sentence. Multiple independent constraints survive intact.
+    if sum(len(s.split()) for s in candidates) <= max_tokens:
+        out = " ".join(candidates).strip()
+        return (out if out[-1] in ".!?" else out + ".") or prompt
 
     query_words = {w for w in _WORD_RE.findall(prompt.lower()) if len(w) > 3}
+    order = {id(s): i for i, s in enumerate(candidates)}
 
-    # Rank each sentence; preserve original order when scores tie
+    # 1. The core ask — never dropped, even if it alone overflows the budget.
+    first = candidates[0]
+    kept = [first]
+    word_count = len(first.split())
+    rest = candidates[1:]
+
+    # 2. Imperative / constraint sentences before any scored filler.
+    imperative = [s for s in rest if _is_imperative_or_constraint(s)]
+    imp_ids = {id(s) for s in imperative}
+    for s in imperative:
+        sw = len(s.split())
+        if word_count + sw > max_tokens:
+            break
+        kept.append(s)
+        word_count += sw
+
+    # 3. Fill remaining budget from highest-scoring remaining sentences.
     scored = [(i, _rank_score(s, query_words), s)
-              for i, s in enumerate(candidates)]
-    order = {id(s): i for i, (_, _, s) in enumerate(scored)}
-
-    # Sort by score desc, then by original position asc (stable)
-    ranked = sorted(scored, key=lambda r: (-r[1], r[0]))
-
-    kept: List[str] = []
-    word_count = 0
-    for _idx, _score, sent in ranked:
+              for i, s in enumerate(rest) if id(s) not in imp_ids]
+    scored.sort(key=lambda r: (-r[1], r[0]))
+    for _idx, _score, sent in scored:
         sw = len(sent.split())
-        if word_count + sw > max_tokens and kept:
+        if word_count + sw > max_tokens:
             break
         kept.append(sent)
         word_count += sw
 
-    if not kept:
-        # No sentence fit the budget alone; return the highest-scoring one
-        return ranked[0][2]
-
-    # Re-emit kept sentences in original document order so the prose flows
+    # Re-emit kept sentences in original document order so the prose flows.
     kept.sort(key=lambda s: order.get(id(s), 0))
     out = " ".join(kept).strip()
     if out and out[-1] not in ".!?":

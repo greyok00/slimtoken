@@ -261,9 +261,12 @@ def test_get_config():
         check("get_config enabled_stages is a sorted list",
               isinstance(cfg["enabled_stages"], list) and cfg["enabled_stages"] == sorted(cfg["enabled_stages"]))
         check("always-on enables distill", "distill" in cfg["enabled_stages"])
-        check("always-on enables tool_compress",
-              cfg.get("tool_compress") is True or cfg.get("tool_compress") == 1)
-        # tool_compress is ON by default in the always-on config
+        # lossy tool_compress is OFF by default (opt-in via SLIMTOKEN_TOOL_COMPRESS)
+        check("always-on tool_compress off by default",
+              not cfg.get("tool_compress"))
+        # old user turns preserved by default (distill_include_user off)
+        check("always-on distill_include_user off by default",
+              not cfg.get("distill_include_user"))
         check("always-on token_budget is 131072", cfg.get("token_budget") == 131072)
         check("always-on keep_last is 4", cfg.get("keep_last") == 4)
     finally:

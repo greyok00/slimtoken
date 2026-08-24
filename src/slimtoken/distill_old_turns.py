@@ -3,10 +3,18 @@
 Long coding-agent conversations carry verbose old turns — multi-paragraph
 explanations, reasoning chains, restatements — that the model no longer needs
 verbatim once a few turns have passed. This stage compresses the PROSE of
-messages older than ``keep_last`` into a short extractive summary (first
-sentence(s) + a note), while leaving the most recent ``keep_last`` messages
-byte-identical and leaving every ``tool_use`` / ``tool_result`` / ``image``
-block untouched.
+ASSISTANT messages older than ``keep_last`` into a short extractive summary
+(first sentence(s) + a note), while leaving the most recent ``keep_last``
+messages byte-identical and leaving every ``tool_use`` / ``tool_result`` /
+``image`` block untouched.
+
+**Only assistant messages are distilled by default.** Old *user* turns are
+specifications the model must obey — requirements, schemas, constraints,
+instructions. Rewriting them destroys the very facts the task depends on (an
+old user "requirements" message distilled to its first 100 chars loses every
+other requirement). Distillation of user turns is available but OFF by
+default: pass ``include_user=True`` to opt in, for histories where old user
+turns are known-safe to compress.
 
 No model call is made — distillation is a cheap, deterministic, fence-aware
 extraction: keep the lead of each old text block, drop the tail, mark it.
@@ -81,8 +89,13 @@ def distill_text(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
 
 
 def distill_old_turns(messages: List[Dict], stats: Dict,
-                      keep_last: int = 8, max_chars: int = DEFAULT_MAX_CHARS) -> List[Dict]:
+                      keep_last: int = 8, max_chars: int = DEFAULT_MAX_CHARS,
+                      include_user: bool = False) -> List[Dict]:
     """Return messages with old prose distilled. Recent ``keep_last`` untouched.
+
+    Only ASSISTANT messages older than ``keep_last`` are distilled unless
+    ``include_user`` is True. Old user turns are treated as instructions to
+    preserve verbatim (opt-in compresses them too).
 
     Never mutates input. Returns the original list object if nothing changed.
     """
@@ -93,6 +106,9 @@ def distill_old_turns(messages: List[Dict], stats: Dict,
     count = 0
     for i, msg in enumerate(messages):
         if i >= cutoff or not isinstance(msg, dict):
+            new_msgs.append(msg)
+            continue
+        if not include_user and msg.get("role") != "assistant":
             new_msgs.append(msg)
             continue
         c = msg.get("content")

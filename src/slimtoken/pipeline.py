@@ -48,6 +48,9 @@ class MinifyConfig:
     keep_last: int = 8              # distill + budget: always keep most recent N
     dedup_min_chars: int = _DEDUP_MIN
     distill_max_chars: int = _DISTILL_MAX
+    # Distill ONLY assistant messages by default. Old user turns are the task
+    # spec — distilling them drops requirements. Opt in to compress user turns.
+    distill_include_user: bool = False
     # Lossy opt-in (off by default — see tool_result_compress; not wired here).
     tool_compress: bool = False
     # Lossy opt-in: prune large HTML tool_results (see dom_pruner).
@@ -229,8 +232,11 @@ def optimize_messages(messages, cfg: MinifyConfig, stats: MinifyStats):
                 local_changed = True
                 minify_hit = True
 
-        # distill old text (stage 5) — operates on (possibly minified) content
-        if distill_on and 0 <= i < cutoff:
+        # distill old text (stage 5) — operates on (possibly minified) content.
+        # Assistant-only by default: old user turns are the task spec and must
+        # survive. Opt-in (distill_include_user) compresses user turns too.
+        if distill_on and 0 <= i < cutoff and (
+                cfg.distill_include_user or msg.get("role") == "assistant"):
             nc, changed = _distill_content(content, cfg.distill_max_chars)
             if changed:
                 content = nc
