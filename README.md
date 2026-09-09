@@ -10,6 +10,8 @@ model sees less, charges less, and answers faster.
 It's a small Python toolkit that runs three ways: as an always-on proxy in
 front of any Anthropic / OpenAI / Ollama backend, as an MCP server any agent
 can call, or imported as a plain library. Same code, same wins either way.
+Since v0.5.0 it also ships **`slimtoken.memory`** — a persistent, disk-backed
+memory + guard-rail layer for agents (formerly its own project, now merged in).
 
 ### Prompt reframe — CPU, not LLM
 
@@ -251,6 +253,53 @@ length unless an explicit int is passed.
 → Full algorithm in
 [`skills/prompt-reframe/references/stages.md`](skills/prompt-reframe/references/stages.md).
 → Agent Skill manifest: [`skills/prompt-reframe/SKILL.md`](skills/prompt-reframe/SKILL.md).
+
+## Memory layer — persistent agent memory (`slimtoken.memory`)
+
+Compression makes each request cheaper; the memory layer makes the *next*
+session smarter. `slimtoken.memory` is a disk-backed memory + guard-rail layer
+for agent loops, in 22 modules under one import:
+
+- **Tiered memory** — append-only JSONL files in hot / warm / cold tiers plus a
+  SQLite store, with atomic appends (crash-safe, single `write()` per line) and
+  a hot→warm sync.
+- **Agent-loop guard rails** — `retry` + `CircuitBreaker`, `LoopGuard`
+  (detect runaway tool loops), `PreFlightGate` / `verify_before_llm`
+  (fail-fast checks before a model call), `PostResponseVerifier` (checks the
+  response after it lands), and `ColdDistiller` (folds cold-tier history down).
+- **Response shaping** — `parse_response` / `collapse` / `stream_turn` and
+  block models (`TextBlock`, `ToolBlock`, `ArtifactBlock`, …) for turning raw
+  model output into structured pieces.
+- **MCP server** — the same memory over MCP stdio for any agent host.
+
+```python
+from slimtoken.memory import append, read_last, search, write_cold, cold_get
+
+append("assistant", "fixed the retry backoff in the proxy")  # → hot tier
+search("retry backoff")      # keyword search across hot memory
+write_cold("decisions", {"fact": "keep q4_0 KV cache"})      # → cold tier
+cold_get("decisions")        # → the stored knowledge dict
+```
+
+Everything is local files — no daemon required for the basics. The write path
+is a single atomic `os.write()` per JSONL line, so a crash mid-session never
+leaves a torn line behind.
+
+**MCP stdio server** (needs the `mcp` extra):
+
+```bash
+pip install "slimtoken[mcp]"
+python -m slimtoken.memory.mcp_server
+```
+
+**Config** uses `SLIMTOKEN_MEMORY_*` env vars (retry limits, loop-guard
+thresholds, tier sizes like `HOT_LIMIT_MB`). Defaults are sane; nothing needs
+setting to start.
+
+**Where the data lives:** `~/.config/cortexllm/` (memory tiers + SQLite DB) and
+`~/.cortexllm/` (runtime state). The directory name is historical — kept so
+existing installs keep their data on upgrade. Everything is plain JSONL/SQLite;
+copy the directory and you've backed up the memory.
 
 ## Practical example — what it actually does
 
@@ -619,15 +668,17 @@ safe values for your specific VRAM automatically.
 ## Tests
 
 ```bash
-python3 -m pytest tests/ -q          # 32 checks — core pipeline + proxy + adapters + context presets
+python3 -m pytest tests/ -q          # 119 checks — core pipeline + proxy + adapters + memory layer
 ```
 
 Cover fence byte-identity, pair-safety, dedup, distill, ≥50% default reduction
 on a bloated payload, real-tokenizer counting (no whole-body serialize),
 single-pass equivalence, type-compressor pair-safety, output-filter truncation +
 filler-strip, DOM pruning, stats persistence, async proxy end-to-end, `/metrics`
-latency buckets, fast-path byte-identical passthrough, and the full MCP stdio
-handshake + every tool + the error paths.
+latency buckets, fast-path byte-identical passthrough, the full MCP stdio
+handshake + every tool + the error paths — plus the memory layer: tier
+lifecycle, atomic appends, env-var handling, retry/circuit-breaker, loop guard,
+pre-flight/post-verify, and the memory MCP server.
 
 ## License
 
