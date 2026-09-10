@@ -131,6 +131,30 @@ model that must see raw tool output verbatim). Opt out cleanly:
 - **Full removal:** `slimtoken uninstall` — restores your prior
   `ANTHROPIC_BASE_URL` and removes the marker block.
 
+## Command list
+
+Every CLI command, one line each. `slimtoken --help` prints the same list.
+
+| Command | What it does | Key flags |
+|---------|--------------|-----------|
+| 🚀 `serve` | Run the minify proxy (default upstream `http://127.0.0.1:8080`) | `--port --upstream --tool-compress --max-tokens --stop --http2` |
+| 🔌 `install` | Point `ANTHROPIC_BASE_URL` at the proxy (reversible marker block in your shell rc, prior value backed up) | `--url --rc` |
+| 🔧 `uninstall` | Remove the marker block, restore the prior `ANTHROPIC_BASE_URL` | `--rc` |
+| 🗜️ `optimize` | Minify one request body, print before/after token counts | `-i FILE\|-` · `-f anthropic\|openai\|ollama` · `--max-input-tokens --json` |
+| 📊 `presets` | Local-model presets by GPU VRAM tier | `--vram-gb 4\|8\|16` · `--measure` (live reduction) |
+| 📏 `high-context` | High-context dense+MoE presets with effective context after compression | `--vram-gb 4\|8\|16` · `--detail` (llama-server commands) |
+| ⚙️ `config-optimizer` | Recommend llama-server args for a GPU + model (recommend-only) | `--model PATH \| --model-size-gb N` · `--vram-gb --kv-per-token --native-ctx` |
+| ⏱️ `latency` | One request through a running proxy → `t0–t4` breakdown | `--port` |
+| 🧩 `lazy-mcp` | Lazy MCP stub server — advertises configured MCP servers as deferred tools, spawns the real server only when called | `--name NAME` · `smoke` (self-test) |
+
+Installed alongside the CLI (`[project.scripts]` entry points):
+
+| Entry point | What it does |
+|-------------|--------------|
+| 🛰️ `slimtoken-mcp` | MCP stdio server exposing slimtoken's tools to any MCP host |
+| 📝 `slimtoken-reframe-mcp` | MCP stdio server for the prompt-reframe pipeline |
+| 🚀 `slimtoken-serve` | Runs the proxy directly (same as `slimtoken serve`) |
+
 ## What it does — the pipeline
 
 A minify pipeline runs on each request, all on by default. The diagram shows the
