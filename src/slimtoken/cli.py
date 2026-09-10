@@ -248,17 +248,20 @@ def cmd_optimize(args):
 def cmd_presets(args):
 
     from . import model_presets as mp
-    rows = (mp.preset_with_reduction(args.vram_gb) if args.measure
-            else mp.list_presets(args.vram_gb))
+    m = mp.measure_reduction("bloated") if args.measure else None
+    rows = mp.list_presets(args.vram_gb)
     if not rows:
         print("no presets match.", file=sys.stderr)
         return 1
-    print(f"{'VRAM':>4}  {'model':38} {'quant':8} {'ctx':>7} reduction")
+    print(f"{'VRAM':>4}  {'model':38} {'quant':8} {'ctx':>7}")
     for r in rows:
-        red = r.get("reduction_pct_bloated")
-        reds = f"{red:>5}%" if red is not None else "  n/a"
         print(f"{r['vram_gb']:>4}GB {r['model'][:38]:38} {r['quant'][:8]:8} "
-              f"{r['context']:>7} {reds}   {r['notes']}")
+              f"{r['context']:>7}   {r['notes']}")
+    if m:
+        print(f"\npipeline reduction on a sample bloated payload: "
+              f"{m['reduction_pct']}% ({m['tokens_in']:,} -> {m['tokens_out']:,} tokens)")
+        print("one number for the whole pipeline — the proxy shrinks requests the")
+        print("same way no matter which model serves them, so it is not per-model.")
     return 0
 
 
