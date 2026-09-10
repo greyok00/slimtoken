@@ -43,7 +43,7 @@ class Recommendation:
 
     def llama_server_cmd(self, port: int = 8080, alias: str = "slimtoken") -> str:
         args = [
-            "llama-server", "-m", self.model_path,
+            "llama-server", "-m", self.model_path or "<model.gguf>",
             "-c", str(self.ctx), "-ngl", str(self.ngl),
             "-fa", self.fa, "-ctk", self.ctk, "-ctv", self.ctv,
             "-np", str(self.np), "-b", str(self.b), "-ub", str(self.ub),
