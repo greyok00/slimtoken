@@ -184,12 +184,18 @@ def cmd_latency(args):
 
 def cmd_config_optimizer(args):
     from . import config_optimizer as co
-    vram = float(args.vram_gb) if args.vram_gb else None
-    rec = co.recommend(
-        vram_gb=vram, model_path=args.model,
-        model_size_gb=float(args.model_size_gb) if args.model_size_gb else None,
-        kv_per_token_bytes=int(args.kv_per_token),
-        native_ctx=int(args.native_ctx))
+    try:
+        vram = float(args.vram_gb) if args.vram_gb else None
+        rec = co.recommend(
+            vram_gb=vram, model_path=args.model,
+            model_size_gb=float(args.model_size_gb) if args.model_size_gb else None,
+            kv_per_token_bytes=int(args.kv_per_token),
+            native_ctx=int(args.native_ctx))
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        print("usage: slimtoken config-optimizer --model PATH | --model-size-gb N "
+              "[--vram-gb N] [--kv-per-token B] [--native-ctx N]", file=sys.stderr)
+        return 2
     print(co.format_report(rec))
 
 
@@ -279,6 +285,12 @@ def cmd_high_context(args):
               f"{r['nominal_ctx']:>8} {r['total_gb']:>7.2f} {r['margin_gb']:>+6.2f} "
               f"{r['reduction_pct']:>5.1f} {r['effective_ctx']:>10,}  "
               f"{r['notes'][:38]}")
+    m = cp.measure_reduction("bloated")
+    print(f"\nred% = pipeline reduction measured once on a sample bloated payload "
+          f"({m['reduction_pct']}%, {m['tokens_in']:,} -> {m['tokens_out']:,} tokens), "
+          f"not per-model — the proxy shrinks every request the same way.")
+    print(f"effective = nominal ctx / (1 - red%/100): the context a real bloated "
+          f"session needs, once compressed.")
     if args.detail:
         print("\n# llama-server commands (replace the -m path with your .gguf):")
         for r in rows:
