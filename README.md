@@ -301,6 +301,54 @@ setting to start.
 existing installs keep their data on upgrade. Everything is plain JSONL/SQLite;
 copy the directory and you've backed up the memory.
 
+## How it compares
+
+Both halves of slimtoken have well-known competitors. This is the honest map —
+including where they win.
+
+### vs. token-compression systems
+
+| | slimtoken proxy | [LLMLingua](https://github.com/microsoft/LLMLingua) / LLMLingua-2 | [Gisting](https://github.com/jayelm/gisting) | Provider prompt caching | Truncation / sliding window |
+|---|---|---|---|---|---|
+| How it compresses | deterministic CPU rewrite of the request (minify · dedup · distill · budget) | a small LM scores and drops tokens or sentences | a fine-tuned model compresses context into gist vectors | caches the repeated prefix server-side | drops the oldest turns wholesale |
+| Model / GPU needed | none | yes — 1–3 B scorer, GPU recommended | yes — fine-tuned LLM | no | no |
+| Applied to every request | yes — sits in the request path | per-call; your code must invoke it | per-call | no — first call billed full | yes |
+| What's preserved | old *user* turns verbatim · tool pairs intact · fenced code byte-identical | intent (tokens reassembled, not verbatim) | gist, not text | nothing — same tokens, lower bill | nothing |
+| Response side | filler strip · token cap · stop sequences | none | none | none | none |
+| Adopt cost | `pip install` + one env var | pip + model download | research code | free (it's the provider's) | free |
+
+Two honest notes:
+
+- **Prompt caching is a complement, not a competitor.** It cuts the *bill* on
+  repeated prefixes, but the request still carries every token. slimtoken cuts
+  the request itself — the two compose.
+- **LLMLingua can compress harder in the general case** — a model-driven rewrite
+  squeezes more than a deterministic one — but it costs a model download and
+  GPU time per call, and it reassembles your text. slimtoken's default path is
+  lossless *by construction* (old user turns verbatim, tool pairs intact,
+  fenced code untouched), with the lossy stages behind explicit opt-in flags.
+  Against plain truncation the difference is bigger: truncation throws old
+  turns away; distill keeps a gist of each and preserves user turns verbatim.
+
+### vs. agent-memory systems
+
+| | slimtoken.memory | [mem0](https://github.com/mem0ai/mem0) | [Zep / Graphiti](https://github.com/getzep/graphiti) | [Letta (MemGPT)](https://github.com/letta-ai/letta) | [LangChain memory](https://python.langchain.com/docs/concepts/memory/) |
+|---|---|---|---|---|---|
+| Storage | plain JSONL + SQLite, one directory | vector DB (SaaS-first) | Postgres + temporal graph | managed server | whatever you wire up |
+| Memories are made by | your agent appends explicit records | LLM extracts facts from chats | LLM builds a temporal knowledge graph | the agent edits its own memory | your code |
+| Search | keyword across tiers | semantic (embeddings) | graph + hybrid | semantic | per-implementation |
+| Model needed at rest | none | yes — extraction + embedding | yes | yes — it's an agent server | varies |
+| Runs fully offline | yes | OSS core, cloud-first | self-hosted Postgres | server process | library only |
+| Agent guard rails | retry · circuit breaker · loop guard · pre/post verify | none | none | none | none |
+| Backup | copy the directory | DB export | DB dump | DB dump | n/a |
+
+The deliberate trade-off: **no embeddings, no graph, no extraction LLM.**
+Semantic recall is genuinely better at "find related ideas" — if that's the
+requirement, mem0 or Zep is the right tool. What slimtoken.memory is instead:
+files you can read and copy, agent guard rails nobody else bundles, and writes
+that survive a crash mid-line. Memory injected into a prompt is itself a
+compression problem — which is why the tier system and `ColdDistiller` exist.
+
 ## Practical example — what it actually does
 
 A realistic bloated session (6 repeated file reads + verbose history, 18 KB body):
