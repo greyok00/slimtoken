@@ -131,6 +131,21 @@ model that must see raw tool output verbatim). Opt out cleanly:
 - **Full removal:** `slimtoken uninstall` — restores your prior
   `ANTHROPIC_BASE_URL` and removes the marker block.
 
+### Two-profile deploy
+
+One proxy process runs one pipeline. When a box serves two very different
+backends, run two instances instead of reconfiguring one:
+
+| Instance | Stages | Sits in front of |
+|---|---|---|
+| minimal | distill + dedup only — never touches tool schemas or the system prompt | a cloud endpoint, where tool-call fidelity matters most |
+| full | every stage + tool compression + DOM minify + keep-last | a local model, where raw context volume is the enemy |
+
+Each instance is one `slimtoken serve --upstream … --port …` with its own env
+pins (`MINIFY_TOOLS`, `MINIFY_DISTILL`, `DEDUP`, `TOOL_COMPRESS`, …), so the
+stage table in "What it does" doubles as the per-instance config surface.
+Ship each as a user systemd unit and point clients at the matching port.
+
 ## Command list
 
 Every CLI command, one line each. `slimtoken --help` prints the same list.

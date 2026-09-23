@@ -3,9 +3,53 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import List, Optional
 
 
+
+
+
+# Token-guard: strip strings that a downstream tokenizer treats as special
+# tokens. GLM (and friends) emit these literally in model output; once one
+# lands in a client's conversation history it poisons every later request
+# (tiktoken raises ValueError -> proxy kills the connection -> timeout loop).
+# We rewrite them to a bracketed plain-text form BEFORE they reach the client.
+_SPECIAL_TOKEN_RE = re.compile(r"<\|([a-zA-Z0-9_.\-]{1,48})\|>")
+_SPECIAL_TOKEN_NAME_RE = re.compile(r"^<\|([a-zA-Z0-9_.\-]{1,48})\|>$")
+
+# Known cl100k specials, matched exactly even without <||> delimiters
+# (defense in depth — some models emit them bare).
+_KNOWN_SPECIALS = (
+    "endoftext", "endofprompt", "fim_prefix", "fim_middle", "fim_suffix",
+)
+
+
+def _block_special_tokens(text: str) -> str:
+    if "<|" not in text:
+        # still check bare known specials (cheap: short strings only)
+        for sp in _KNOWN_SPECIALS:
+            if sp in text:
+                return re.sub(
+                    r"(?<![a-zA-Z0-9_])" + re.escape(sp) + r"(?![a-zA-Z0-9_])",
+                    "[" + sp + "]", text)
+        return text
+    def _sub(m: "re.Match") -> str:
+        return "[" + m.group(1) + "]"
+    return _SPECIAL_TOKEN_RE.sub(_sub, text)
+
+
+# A trailing "<|endo" style fragment could be the start of a special token
+# completed in the NEXT streamed delta — hold it back until then.
+_PARTIAL_TOKEN_RE = re.compile(r"<\|[a-zA-Z0-9_.\-]{0,48}\|?$")
+
+
+def _holdback_partial(text: str, carry: str) -> tuple:
+    combined = carry + text
+    m = _PARTIAL_TOKEN_RE.search(combined)
+    if m and m.end() == len(combined):
+        return combined[:m.start()], m.group(0)
+    return combined, ""
 
 
 _FILLER_PATTERNS = (
@@ -50,18 +94,20 @@ def _env_stops() -> List[str]:
 def is_active() -> bool:
 
 
-    return bool(_env_max_tokens() or _env_stops() or _env_filler())
+    return bool(_env_max_tokens() or _env_stops() or _env_filler()
+                or os.environ.get("SLIMTOKEN_BLOCK_TOKENS", "1") not in ("0", "false", "no", "off"))
 
 
 class OutputFilter:
 
 
     def __init__(self, max_tokens: Optional[int] = None, stops: Optional[List[str]] = None,
-                 filler: bool = True):
+                 filler: bool = True, block: bool = True):
         from .tokencount import get_encoder
         self.max_tokens = max_tokens
         self.stops = stops or []
         self.filler = filler
+        self.block = block
         self._enc = get_encoder()
         self._emitted_tokens = 0
         self._closed = False
@@ -70,13 +116,15 @@ class OutputFilter:
         self._stop_window = max((len(s) for s in self.stops), default=0) if self.stops else 0
         self._filler_buf = ""
         self._filler_done = False
+        self._block_carry = ""      # held-back partial "<|..."" fragment
+        self._pending_out = None    # one-frame delay so carry can be re-injected
 
 
     def feed(self, chunk: bytes) -> bytes:
         if self._closed or not chunk:
             return b"" if self._closed else chunk
 
-        if not self.max_tokens and not self.stops and not self.filler:
+        if not self.max_tokens and not self.stops and not self.filler and not self.block:
             return chunk
         self._buf += chunk
         out = bytearray()
@@ -87,29 +135,73 @@ class OutputFilter:
                 break
             frame = self._buf[:idx]
             self._buf = self._buf[idx + 2:]
-            out += self._process_frame(frame) + b"\n\n"
+            # flush the previously-held frame, now that we know whether the
+            # held-back "<|..." partial completed into a token in this frame
+            if self._pending_out is not None:
+                out += self._inject_carry(self._pending_out, self._block_carry)
+                self._pending_out = None
+            frame_out = self._process_frame(frame) + b"\n\n"
             if self._closed:
-
+                # stream truncated (stop/max_tokens): emit this frame with its
+                # own held-back tail, then stop
+                out += self._inject_carry(frame_out, self._block_carry)
+                self._pending_out = None
+                self._block_carry = ""
                 self._buf = b""
                 break
+            self._pending_out = frame_out
         return bytes(out)
 
     def finish(self) -> bytes:
 
         if self._closed:
             return b""
-        if not self._buf:
+        out = bytearray()
+        if self._pending_out is not None:
+            out += self._inject_carry(self._pending_out, self._block_carry)
+            self._pending_out = None
+            self._block_carry = ""
+        if self._buf:
+            frame_out = self._process_frame(self._buf) + b"\n\n"
+            out += self._inject_carry(frame_out, self._block_carry)
+            self._block_carry = ""
+            self._buf = b""
+        elif self._filler_buf and not self._filler_done:
+            self._filler_done = True
+            pending = self._filler_buf
+            self._filler_buf = ""
+            out += pending.encode("utf-8")
+        self._pending_out = None
+        return bytes(out)
 
-
-            if self._filler_buf and not self._filler_done:
-                self._filler_done = True
-                pending = self._filler_buf
-                self._filler_buf = ""
-                return pending.encode("utf-8")
-            return b""
-        out = self._process_frame(self._buf) + b"\n\n"
-        self._buf = b""
-        return out
+    def _inject_carry(self, frame: bytes, carry: str) -> bytes:
+        """Prepend held-back text into a frame's text delta (SSE-safe)."""
+        if not carry:
+            return frame
+        text = frame.decode("utf-8", errors="replace")
+        data_lines = [l[5:].lstrip() for l in text.split("\n")
+                      if l.strip().startswith("data:")]
+        if len(data_lines) != 1:
+            return frame + carry.encode("utf-8")
+        try:
+            obj = json.loads(data_lines[0])
+        except Exception:
+            return frame + carry.encode("utf-8")
+        refs = self._text_refs(obj)
+        if not refs:
+            return frame + carry.encode("utf-8")
+        container, key = refs[0]
+        container[key] = carry + (container[key] or "")
+        new_obj = json.dumps(obj, separators=(",", ":"))
+        rebuilt = []
+        replaced = False
+        for l in text.split("\n"):
+            if l.strip().startswith("data:") and not replaced:
+                rebuilt.append(f"data: {new_obj}")
+                replaced = True
+            else:
+                rebuilt.append(l)
+        return "\n".join(rebuilt).encode("utf-8")
 
 
     @staticmethod
@@ -160,6 +252,12 @@ class OutputFilter:
         refs = self._text_refs(obj)
         if not refs:
             return frame
+        # prepend any partial-token text held back from the previous frame
+        # (applied to the first text ref only; SSE deltas carry one text field)
+        if self.block and self._block_carry:
+            container, key = refs[0]
+            container[key] = self._block_carry + (container[key] or "")
+            self._block_carry = ""
         changed = False
         stop_hit = False
         for container, key in refs:
@@ -223,6 +321,11 @@ class OutputFilter:
         if self._closed:
             return ("", True)
 
+        if self.block:
+            text = _block_special_tokens(text)
+            text, hold = _holdback_partial(text, "")
+            self._block_carry = hold
+
         if self.filler and not self._filler_done:
             text = self._strip_filler(text)
             if text is None:
@@ -270,10 +373,19 @@ class OutputFilter:
 
 
 def from_env() -> Optional["OutputFilter"]:
-
+    # Token-guard is ALWAYS on (SLIMTOKEN_BLOCK_TOKENS=0 to disable): a special
+    # token string escaping into client history wedges every future request.
     mt = _env_max_tokens()
     stops = _env_stops()
     filler = _env_filler()
-    if not mt and not stops and not filler:
+    block = _bool_env_block()
+    if not mt and not stops and not filler and not block:
         return None
-    return OutputFilter(max_tokens=mt, stops=stops, filler=filler)
+    return OutputFilter(max_tokens=mt, stops=stops, filler=filler, block=block)
+
+
+def _bool_env_block() -> bool:
+    v = os.environ.get("SLIMTOKEN_BLOCK_TOKENS")
+    if v is None:
+        return True
+    return v.strip().lower() in ("1", "true", "yes", "on")
