@@ -778,7 +778,19 @@ Slimtoken is built on excellent open-source work — huge thanks to:
 | [uvloop](https://github.com/MagicStack/uvloop) | optional fast event loop |
 | [Model Context Protocol Python SDK](https://github.com/modelcontextprotocol/python-sdk) | `slimtoken-mcp` / memory MCP server |
 | [pytest](https://github.com/pytest-dev/pytest) | the 128-check test gate |
+| [mypy](https://github.com/python/mypy) | static type checking in the dev toolchain |
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) | the local inference stack `config-optimizer` tunes for |
+
+**Algorithm provenance** — these aren't libraries, they're ideas slimtoken
+reimplements from scratch; credit where the ideas come from:
+
+- **TextRank** — the sentence ranker in `prompt_reframe` ("TextRank-lite") is
+  a from-scratch, graph-free variant of the algorithm from *Mihalcea &
+  Tarau, "TextRank: Bringing Order into Text", EMNLP 2004*
+  ([paper](https://www.aclweb.org/anthology/W04-3252/)). Only the ranking
+  idea is borrowed; no TextRank code is used.
+- **xxHash** — dedup hashing goes through python-xxhash (above), which binds
+  Yann Collet's [xxHash](https://github.com/Cyan4973/xxHash) C library.
 
 ## Tests
 
