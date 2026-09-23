@@ -752,6 +752,34 @@ safe values for your specific VRAM automatically.
 > trusting the margin. The compute buffer is calibrated for `--kv-unified` on a
 > hybrid MoE; dense models or `--kv-budget` change the math.
 
+## Changelog
+
+**v0.5.6 — loop fix (2026-09-23).** Fixed a bug that made LLM agents loop
+forever: `slimtoken.memory`'s MCP server searched memory with the *entire
+multi-word query as a single exact substring* (`LIKE '%whole query%'`), so
+real-world queries returned empty results every time and the agent kept
+retrying / fell back to grepping its own session logs. Search is now
+per-token (AND across tokens, OR-rank fallback), across hot (`.jsonl`),
+per-platform warm, and cold tiers. Also: the `distill` stage was rewritten
+loss-preserving — every code fence is kept byte-identical (the old version
+dropped all fences after the first) and prose keeps head + tail with an
+explicit `[slimtoken: N chars elided]` marker instead of a silent chop.
+
+## Credits & Thanks
+
+Slimtoken is built on excellent open-source work — huge thanks to:
+
+| Project | Used for |
+|---|---|
+| [httpx](https://github.com/encode/httpx) | async HTTP client for the proxy and upstream calls |
+| [orjson](https://github.com/ijl/orjson) | fast JSON (de)serialization on the hot path |
+| [python-xxhash](https://github.com/ifduyue/python-xxhash) (xxHash by [Cyan4973](https://github.com/Cyan4973/xxHash)) | fast content hashing for dedup |
+| [tiktoken](https://github.com/openai/tiktoken) | real-tokenizer token counting (no whole-body estimates) |
+| [uvloop](https://github.com/MagicStack/uvloop) | optional fast event loop |
+| [Model Context Protocol Python SDK](https://github.com/modelcontextprotocol/python-sdk) | `slimtoken-mcp` / memory MCP server |
+| [pytest](https://github.com/pytest-dev/pytest) | the 128-check test gate |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) | the local inference stack `config-optimizer` tunes for |
+
 ## Tests
 
 ```bash
