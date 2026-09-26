@@ -299,9 +299,12 @@ Compression makes each request cheaper; the memory layer makes the *next*
 session smarter. `slimtoken.memory` is a disk-backed memory + guard-rail layer
 for agent loops, in 22 modules under one import:
 
-- **Tiered memory** — append-only JSONL files in hot / warm / cold tiers plus a
-  SQLite store, with atomic appends (crash-safe, single `write()` per line) and
-  a hot→warm sync.
+- **Two-tier memory** — a hot NDJSON working set (append-only, unbounded) plus
+  cold JSON facts keyed by category, with atomic appends (crash-safe, a single
+  `write()` per line). Warm was retired as a storage tier in v0.4.2 — the
+  stats key stays zeroed and `hot_to_warm_sync()` survives only as a no-op
+  shim for old callers. A small SQLite DB (`~/.config/cortexllm/cortexllm.db`)
+  backs the coding-practices and extractor tables.
 - **Agent-loop guard rails** — `retry` + `CircuitBreaker`, `LoopGuard`
   (detect runaway tool loops), `PreFlightGate` / `verify_before_llm`
   (fail-fast checks before a model call), `PostResponseVerifier` (checks the
@@ -332,8 +335,8 @@ python -m slimtoken.memory.mcp_server
 ```
 
 **Config** uses `SLIMTOKEN_MEMORY_*` env vars (retry limits, loop-guard
-thresholds, tier sizes like `HOT_LIMIT_MB`). Defaults are sane; nothing needs
-setting to start.
+thresholds). Hot has no size cap — `ALLOW_CAP` is `False`, so hot grows
+unbounded. Defaults are sane; nothing needs setting to start.
 
 **Where the data lives:** `~/.config/cortexllm/` (memory tiers + SQLite DB) and
 `~/.cortexllm/` (runtime state). The directory name is historical — kept so
@@ -375,7 +378,7 @@ Two honest notes:
 |---|---|---|---|---|---|
 | Storage | plain JSONL + SQLite, one directory | vector DB (SaaS-first) | Postgres + temporal graph | managed server | whatever you wire up |
 | Memories are made by | your agent appends explicit records | LLM extracts facts from chats | LLM builds a temporal knowledge graph | the agent edits its own memory | your code |
-| Search | keyword across tiers | semantic (embeddings) | graph + hybrid | semantic | per-implementation |
+| Search | keyword over hot; cold by category | semantic (embeddings) | graph + hybrid | semantic | per-implementation |
 | Model needed at rest | none | yes — extraction + embedding | yes | yes — it's an agent server | varies |
 | Runs fully offline | yes | OSS core, cloud-first | self-hosted Postgres | server process | library only |
 | Agent guard rails | retry · circuit breaker · loop guard · pre/post verify | none | none | none | none |
@@ -754,16 +757,15 @@ safe values for your specific VRAM automatically.
 
 ## Changelog
 
-**v0.5.6 — loop fix (2026-09-23).** Fixed a bug that made LLM agents loop
-forever: `slimtoken.memory`'s MCP server searched memory with the *entire
-multi-word query as a single exact substring* (`LIKE '%whole query%'`), so
-real-world queries returned empty results every time and the agent kept
-retrying / fell back to grepping its own session logs. Search is now
-per-token (AND across tokens, OR-rank fallback), across hot (`.jsonl`),
-per-platform warm, and cold tiers. Also: the `distill` stage was rewritten
-loss-preserving — every code fence is kept byte-identical (the old version
-dropped all fences after the first) and prose keeps head + tail with an
-explicit `[slimtoken: N chars elided]` marker instead of a silent chop.
+**v0.5.6 — loop fix (2026-09-23).** Two fixes from the same agent-loop hunt.
+The `distill` stage was rewritten loss-preserving — every code fence is kept
+byte-identical (the old version dropped all fences after the first) and prose
+keeps head + tail with an explicit `[slimtoken: N chars elided]` marker
+instead of a silent chop. The memory-search fix — replacing whole-query
+substring matching (`LIKE '%whole query%'`) with per-token AND/OR-rank search
+— landed in the deployed CortexLLM memory MCP server, not in this package;
+the bundled `slimtoken.memory.search()` remains a plain keyword-substring
+search over hot.
 
 ## Credits & Thanks
 
@@ -795,7 +797,7 @@ reimplements from scratch; credit where the ideas come from:
 ## Tests
 
 ```bash
-python3 -m pytest tests/ -q          # 119 checks — core pipeline + proxy + adapters + memory layer
+python3 -m pytest tests/ -q          # 128 checks — core pipeline + proxy + adapters + memory layer
 ```
 
 Cover fence byte-identity, pair-safety, dedup, distill, ≥50% default reduction
