@@ -30,25 +30,46 @@ to the deep reference. MIT-licensed; ships with `orjson`, `xxhash`, and
 
 ## Token reduction — measured, not claimed
 
-Every number below is computed by slimtoken's own real cl100k tokenizer on
-representative payloads. Run them yourself with `slimtoken presets --measure`.
+Every number below is printed by slimtoken's own real cl100k tokenizer from
+fixtures built into the package, so you can reproduce the whole table with one
+command, on your own machine, without trusting this file:
 
-### Input — the always-on pipeline
+```bash
+slimtoken modes --measure
+```
 
-The request-side pipeline (tools · system · messages · dedup · distill ·
-budget) runs on every request by default and is **lossless**: it only minifies
-whitespace, stubs byte-identical duplicate tool results, distills *assistant*
-prose beyond the keep-last window, and hard-prunes only when the budget is
-exceeded. Old **user** turns (requirements, schemas, constraints) are preserved
-verbatim. The lossy stages — `tool_compress` (type-specific tool-result
-reduction) and `minify_dom` (HTML pruning) — are **opt-in**, off by default.
-Reduction scales with how much waste the session carries:
+### Two modes — the difference is what may be touched
 
-| Scenario | Before | After | Reduction |
-|----------|-------:|------:|----------:|
-| Typical coding session (a file re-read 3×, verbose turns) | 772 tok | 507 tok | **−34.3%** |
-| Bloated session (6 repeated file reads + verbose history) | 3 312 tok | 1 187 tok | **−64.2%** |
-| HTML dump session (10 scraped pages) | 10 894 tok | 1 768 tok | **−83.8%** |
+slimtoken runs in one of two modes, selected by `SLIMTOKEN_MODE`, and the mode
+decides how much of a request is allowed to change.
+
+**`code` is the default, and it is the one for working on code.** It removes a
+tool result that is byte-identical to an earlier one, prose in an assistant turn
+older than the keep-last window, and the middle of an *old* file read — the last
+one marked `[slimtoken-compressed] N B -> M B` so the model can see that
+something was dropped. It never touches your newest turns: the file you just read
+and the instruction you just typed reach the model byte-for-byte. Tool schemas
+are left exactly as written, so how the model fills in arguments is unchanged.
+
+**`realtime` is for talking to a model, not building with one.** It elides old
+user turns as well as assistant turns, cuts prose to 160 characters a turn, and
+shortens even the newest tool result. That last property is why it must never run
+agent work: an elided instruction still reads as a complete instruction, so the
+model answers confidently from evidence it no longer has. On 2026-09-27 exactly
+that — a skeletonised read the model was still waiting on — made an agent re-run
+its own tool call.
+
+| Fixture | What it represents | `code` (default) | `realtime` (lossy) |
+|---------|--------------------|-----------------:|-------------------:|
+| agent session | 8 turns, a *different* real file read each | **−68.5%** | −70.9% |
+| repeated reads | 8 turns, the same large file read every time | **−73.1%** | −85.3% |
+| spoken conversation | no tools, no code, no file reads | **0.0%** | −59.5% |
+
+The bottom row is the whole reason two modes exist. On a conversation the default
+mode saves **nothing at all** — there is no duplicate tool result to stub and no
+file read to shorten, so the only lever left is prose elision, which is lossy and
+therefore not in the default. Point the default at agent work and it earns its
+keep; point it at speech and it does nothing.
 
 ### Output — the filter (on by default)
 
@@ -63,15 +84,9 @@ default** — set `SLIMTOKEN_FILLER=0` to disable. The token cap
 | Long reply with filler lead-in | 380 tok | 374 tok | **−1.6%** |
 | Clean reply (no filler) | 21 tok | 21 tok | 0% (nothing to strip) |
 
-### Combined — one round-trip
-
-Input reduction + output reduction together, on the same session:
-
-| Scenario | Before | After | Reduction |
-|----------|-------:|------:|----------:|
-| Typical session | 793 tok | 528 tok | **−33.4%** |
-| Bloated session | 3 692 tok | 1 561 tok | **−57.7%** |
-| HTML dump session | 10 938 tok | 1 806 tok | **−83.5%** |
+The two sides compose — a session that saves 68% on the way in and 1.6% on the
+way out saves both — but they are measured separately here on purpose, because
+the input side is the part that depends on which mode you chose.
 
 > **The honest caveat:** reduction is proportional to waste. A clean, short
 > session with no repeated content and no filler gets ~0% — slimtoken never
@@ -133,18 +148,20 @@ model that must see raw tool output verbatim). Opt out cleanly:
 
 ### Two-profile deploy
 
-One proxy process runs one pipeline. When a box serves two very different
-backends, run two instances instead of reconfiguring one:
+One proxy process runs one pipeline, and `SLIMTOKEN_MODE` picks which — so the
+common case is one process with one env line, not two services:
 
-| Instance | Stages | Sits in front of |
-|---|---|---|
-| minimal | distill + dedup only — never touches tool schemas or the system prompt | a cloud endpoint, where tool-call fidelity matters most |
-| full | every stage + tool compression + DOM minify + keep-last | a local model, where raw context volume is the enemy |
+| You want | Set |
+|---|---|
+| agent traffic: tool schemas and the system prompt arrive exactly as written | `SLIMTOKEN_MODE=code` (default) |
+| a chat or voice endpoint, where raw context volume is the enemy | `SLIMTOKEN_MODE=realtime` |
 
-Each instance is one `slimtoken serve --upstream … --port …` with its own env
-pins (`MINIFY_TOOLS`, `MINIFY_DISTILL`, `DEDUP`, `TOOL_COMPRESS`, …), so the
-stage table in "What it does" doubles as the per-instance config surface.
-Ship each as a user systemd unit and point clients at the matching port.
+When a box really does serve two very different backends at once — a cloud
+endpoint where tool-call fidelity matters most, and a local model where volume is
+the enemy — run two `slimtoken serve` processes on different ports, each pinned to
+its own mode and upstream, each as its own user systemd unit, and point clients at
+the matching port. Any `SLIMTOKEN_*` switch overrides the mode for that one knob,
+so the stage table in "What it does" doubles as the per-instance config surface.
 
 ## Command list
 
@@ -157,6 +174,7 @@ Every CLI command, one line each. `slimtoken --help` prints the same list.
 | 🔧 `uninstall` | Remove the marker block, restore the prior `ANTHROPIC_BASE_URL` | `--rc` |
 | 🗜️ `optimize` | Minify one request body, print before/after token counts | `-i FILE\|-` · `-f anthropic\|openai\|ollama` · `--max-input-tokens --json` |
 | 📊 `presets` | Local-model presets by GPU VRAM tier | `--vram-gb 4\|8\|16` · `--measure` (live reduction) |
+| 🧭 `modes` | Print the `code` / `realtime` modes, their stages and their trade-offs | `--measure` (live reduction per mode, per fixture) |
 | 📏 `high-context` | High-context dense+MoE presets with effective context after compression | `--vram-gb 4\|8\|16` · `--detail` (llama-server commands) |
 | ⚙️ `config-optimizer` | Recommend llama-server args for a GPU + model (recommend-only) | `--model PATH \| --model-size-gb N` · `--vram-gb --kv-per-token --native-ctx` |
 | ⏱️ `latency` | One request through a running proxy → `t0–t4` breakdown | `--port` |
@@ -172,10 +190,13 @@ Installed alongside the CLI (`[project.scripts]` entry points):
 
 ## What it does — the pipeline
 
-A minify pipeline runs on each request, all on by default. The diagram shows the
-request lifecycle with the `t0–t4` latency boundaries the proxy records per
-request — **proxy-side work** (ingress + optimize) is what slimtoken controls;
-**model-side** (forward → first token → final token) is where real time goes.
+A minify pipeline runs on each request. Which stages are on depends on the mode:
+the default (`code`) keeps the stages that remove *redundancy* and turns off the
+three that rewrite *structure* (`tools`, `system`, `messages`), so nothing the
+model reasons about is reworded. The diagram shows the request lifecycle with the
+`t0–t4` latency boundaries the proxy records per request — **proxy-side work**
+(ingress + optimize) is what slimtoken controls; **model-side** (forward → first
+token → final token) is where real time goes.
 
 ```mermaid
 sequenceDiagram
@@ -184,31 +205,32 @@ sequenceDiagram
     participant B as backend / model
     C->>P: POST /v1/messages  (t0)
     P->>P: read request  (t0→t1)
-    P->>P: minify: tools · system · messages · dedup · distill · budget  (t1→t2)
+    P->>P: minify: the mode's stages · budget  (t1→t2)
     P->>B: forward minified body  (t2)
     B-->>P: first output token  (t3)
     P-->>C: stream raw bytes back  (t3→t4)
     Note over P: proxy-side = (t1-t0)+(t2-t1) ≈ 12 ms<br/>model-side = (t3-t2)+(t4-t3) — dominates
 ```
 
-| Stage | What it does | Lossy? |
-|-------|--------------|:------:|
-| 🧰 tools | Drop `$comment` / `title` / `examples` from schemas; keep `name`, `required`, `enum`, `type`, structure. Compress each `description` to its first fenced example. | no |
-| 📋 system | Collapse whitespace and duplicate banner lines outside code fences; preserve `<tag>` markers and fenced code byte-for-byte. | no |
-| 💬 messages | Collapse blank-line runs and trailing whitespace in text blocks; pass `tool_use` / `tool_result` / `image` blocks untouched. | no |
-| 🔄 dedup | Collapse repeated `tool_result` contents; latest kept verbatim, older copies stubbed. | no* |
-| 📝 distill | Truncate old **assistant** prose beyond the last `SLIMTOKEN_KEEP_LAST` (4) turns to 160 chars/turn. Old *user* turns are preserved verbatim unless `SLIMTOKEN_DISTILL_INCLUDE_USER=1`. Fence-aware, preserves tool blocks, no model call. | assistant old turns only |
-| 🎯 budget | Hard token cap (`SLIMTOKEN_MINIFY_BUDGET`, 131072); drops a leading prefix pair-safely — only when over budget. | drops oldest |
-| 🌐 dom *(opt-in)* | `SLIMTOKEN_MINIFY_DOM=1` — prune large HTML `tool_result` payloads (strip script/style/svg, nav/footer/sidebar, `class`/`id`/`data-*`/`aria-*` attrs, collapse to text). Session-aware LRU cache. | yes |
-| 🗜️ tool_compress *(opt-in)* | `SLIMTOKEN_TOOL_COMPRESS=1` — type-specific reduction of large `tool_result` content (directory listings, git output, logs, JSON, source) + a `[slimtoken-compressed]` header. JSON keeps head + tail records with an omission marker (never drops a tail record); source keeps head + tail lines. Off by default. | yes |
+| Stage | What it does | On in | Lossy? |
+|-------|--------------|-------|:------:|
+| 🧰 tools | Drop `$comment` / `title` / `examples` from schemas; keep `name`, `required`, `enum`, `type`, structure. Compress each `description` to its first fenced example. | realtime | no |
+| 📋 system | Collapse whitespace and duplicate banner lines outside code fences; preserve `<tag>` markers and fenced code byte-for-byte. | realtime | no |
+| 💬 messages | Collapse blank-line runs and trailing whitespace in text blocks; pass `tool_use` / `tool_result` / `image` blocks untouched. | realtime | no |
+| 🔄 dedup | Collapse repeated `tool_result` contents; latest kept verbatim, older copies stubbed. | both | no* |
+| 📝 distill | Shorten old **assistant** prose beyond the last `SLIMTOKEN_KEEP_LAST` turns, to `SLIMTOKEN_DISTILL_MAX_CHARS` a turn (4096 in `code`, 160 in `realtime`). Old *user* turns are preserved verbatim unless `SLIMTOKEN_DISTILL_INCLUDE_USER=1`. Fence-aware, preserves tool blocks, no model call. | both | old assistant turns |
+| 🎯 budget | Hard token cap (`SLIMTOKEN_MINIFY_BUDGET`, 131072); drops a leading prefix pair-safely — only when over budget. | both | drops oldest |
+| 🌐 dom *(opt-in)* | `SLIMTOKEN_MINIFY_DOM=1` — prune large HTML `tool_result` payloads (strip script/style/svg, nav/footer/sidebar, `class`/`id`/`data-*`/`aria-*` attrs, collapse to text). Session-aware LRU cache. | neither | yes |
+| 🗜️ tool_compress | Type-specific reduction of large `tool_result` content (directory listings, git output, logs, JSON, source) + a `[slimtoken-compressed]` header. JSON keeps head + tail records with an omission marker (never drops a tail record); source keeps head + tail lines. Only ever applied to results older than `SLIMTOKEN_KEEP_LAST`, never to the current turn's. `SLIMTOKEN_TOOL_COMPRESS=0` disables it. | both | yes, old results |
 
 \* dedup is lossless in practice — the latest copy is always kept verbatim; only
 stale duplicates are stubbed.
 
 **Safety guarantees** — fenced code blocks (triple-backtick / `~~~`) preserved
 byte-identical; pruning is pair-safe (a `tool_result` is never orphaned from its
-`tool_use`); identity-based change detection returns unchanged content zero-copy;
-the `grammar` field is stripped from request bodies.
+`tool_use`); the current turn's tool result is never compressed; identity-based
+change detection returns unchanged content zero-copy; the `grammar` field is
+stripped from request bodies.
 
 ## Prompt reframe — when a *user prompt* is the problem
 
@@ -367,10 +389,12 @@ Two honest notes:
 - **LLMLingua can compress harder in the general case** — a model-driven rewrite
   squeezes more than a deterministic one — but it costs a model download and
   GPU time per call, and it reassembles your text. slimtoken's default path is
-  lossless *by construction* (old user turns verbatim, tool pairs intact,
-  fenced code untouched), with the lossy stages behind explicit opt-in flags.
-  Against plain truncation the difference is bigger: truncation throws old
-  turns away; distill keeps a gist of each and preserves user turns verbatim.
+  deterministic and bounded in what it may touch: old user turns verbatim, tool
+  pairs intact, fenced code byte-identical, your newest turns untouched, and the
+  one stage that shortens an old file read marked so the model can see that
+  something was dropped. Against plain truncation the difference is bigger:
+  truncation throws old turns away; distill keeps a gist of each and preserves
+  user turns verbatim.
 
 ### vs. agent-memory systems
 
@@ -476,20 +500,37 @@ corrupts the file):
 `GET /metrics` on the proxy returns cumulative token counts + the `t0–t4` latency
 buckets.
 
-## One config, no profiles
+## Two modes, one config
 
-There are no named profiles. slimtoken always runs the full pipeline (the old
-`aggressive` preset, minus the name); every stage and knob is a raw `SLIMTOKEN_*`
-env switch. The two things you might actually want to do:
+`SLIMTOKEN_MODE` picks one of two named starting points; everything else is a raw
+`SLIMTOKEN_*` env switch, and any switch you set explicitly overrides the mode for
+that one knob.
+
+- **`code`** (default) — for an agent working on code. Duplicate tool results are
+  stubbed, prose in old assistant turns is shortened, the middle of an *old* file
+  read is replaced with a marker, tool schemas are left exactly as written, and
+  your newest turns pass through byte-for-byte.
+- **`realtime`** — for talking to a model, not building with one. Elides old user
+  turns as well as assistant turns, cuts prose to 160 characters a turn, and
+  shortens even the newest tool result. Do not run agent work in this mode.
+
+A mode is a set of starting values, not a lock — set `SLIMTOKEN_KEEP_LAST=8` under
+`code` and the rest of code mode still applies. `slimtoken modes` prints both modes
+with their stage lists; `slimtoken modes --measure` prints what each one actually
+saves on the built-in fixtures. An unrecognised mode name falls back to `code` and
+says so on stderr, so a typo can never silently select the lossy mode.
+
+The things you might actually want to do:
 
 - **Turn it all off** — `SLIMTOKEN_MINIFY=0` (raw passthrough; for debugging or
   when the model must see input verbatim).
-- **Preserve old user turns** — the default already keeps them verbatim; the
-  lossless pipeline never distills them. Only `SLIMTOKEN_DISTILL_INCLUDE_USER=1`
-  opts into compressing them.
-- **Opt into a lossy stage** — `SLIMTOKEN_TOOL_COMPRESS=1` (type-specific
-  tool-result reduction) or `SLIMTOKEN_MINIFY_DOM=1` (HTML pruning). Both are
-  OFF by default because they are lossy.
+- **Keep old user turns** — `code` already does. Only `realtime` elides them, and
+  `SLIMTOKEN_DISTILL_INCLUDE_USER=0` turns even that off.
+- **Turn the lossy stage off** — `SLIMTOKEN_TOOL_COMPRESS=0`. It is ON in both
+  modes because it only ever shortens tool results *older* than the keep-last
+  window, but it is the one stage that can drop bytes from a file you read
+  earlier, so the switch is there.
+- **Opt into HTML pruning** — `SLIMTOKEN_MINIFY_DOM=1`, still off by default.
 
 See the [Config](#config) table for the full knob list. The single config
 surface (`build_config`) is shared by the proxy, CLI, MCP server, and skill.
@@ -528,30 +569,32 @@ slimtoken optimize -f ollama  -i req.json
 
 Recommended configs for common local models grouped by GPU VRAM tier, each with a
 usable context (KV cache + overhead eat into the nominal max). The **reduction**
-column is the live measured token drop the always-on pipeline achieves on the
+column is the live measured token drop the pipeline achieves on the
 bloated payload — computed by the pipeline, not hand-waved
 (`slimtoken presets --measure`).
 
 | VRAM | model | quant | usable ctx | reduction |
 |-----:|-------|-------|----------:|--------:|
-| 4 GB | Llama 3.2 3B | Q4_K_M | 8 192 | 85.4% |
-| 4 GB | Qwen 2.5 3B | Q4_K_M | 32 768 | 85.4% |
-| 4 GB | Phi-4 Mini | Q4_0 | 16 384 | 85.4% |
-| 8 GB | LFM2.5-8B-A1B (MoE, 1.5B active) | Q4 | 32 768 | 85.4% |
-| 8 GB | Qwen 2.5 7B | Q4_K_M | 32 768 | 85.4% |
-| 8 GB | Gemma 3 12B | Q4 | 16 384 | 85.4% |
-| 16 GB | Qwen 3 14B | Q4_K_M | 65 536 | 85.4% |
-| 16 GB | Mistral Nemo 12B | Q4_K_M | 131 072 | 85.4% |
-| 16 GB | Llama 3.1 8B | Q4_K_M | 131 072 | 85.4% |
+| 4 GB | Llama 3.2 3B | Q4_K_M | 8 192 | 73.1% |
+| 4 GB | Qwen 2.5 3B | Q4_K_M | 32 768 | 73.1% |
+| 4 GB | Phi-4 Mini | Q4_0 | 16 384 | 73.1% |
+| 8 GB | LFM2.5-8B-A1B (MoE, 1.5B active) | Q4 | 32 768 | 73.1% |
+| 8 GB | Qwen 2.5 7B | Q4_K_M | 32 768 | 73.1% |
+| 8 GB | Gemma 3 12B | Q4 | 16 384 | 73.1% |
+| 16 GB | Qwen 3 14B | Q4_K_M | 65 536 | 73.1% |
+| 16 GB | Mistral Nemo 12B | Q4_K_M | 131 072 | 73.1% |
+| 16 GB | Llama 3.1 8B | Q4_K_M | 131 072 | 73.1% |
 
 > Reduction is **config-dependent, not model-dependent** — the pipeline rewrites
 > the request regardless of which model consumes it, so every tier shows the same
-> number (the always-on config on a bloated payload). On a typical session it's
-> ~34%. Tune the config with the `SLIMTOKEN_*` env knobs, not by switching models.
+> number (the default mode on a bloated payload). On a short session with nothing
+> repeated it is ~0% — and on a real agent session, where each turn reads a
+> different file, it is ~68%. Tune the config with the `SLIMTOKEN_*` env knobs, or
+> pick a different `SLIMTOKEN_MODE`, rather than by switching models.
 
 ## Effective context window — dense vs MoE
 
-Because slimtoken compresses input ~85%, a model's nominal context window holds
+Because slimtoken compresses input ~73%, a model's nominal context window holds
 **far more raw conversation** than its size suggests. The effective capacity is
 `nominal_ctx / (1 − reduction)`. The presets below push each tier to the largest
 nominal context that **fits fully in VRAM** (q4_0 KV, flash attention, full GPU
@@ -569,12 +612,12 @@ slimtoken high-context --vram-gb 16 --detail   # + the llama-server commands
 
 | tier | kind | model | quant | nominal ctx | total GB | margin | effective ctx |
 |-----:|------|-------|-------|------------:|---------:|-------:|-------------:|
-| 4 GB | dense | Llama 3.2 3B | Q4_K_M | 16 384 | 3.67 | +0.33 | ~112 k |
-| 4 GB | MoE | LFM2.5-8B-A1B | IQ2_S | 32 768 | 3.91 | +0.09 | ~224 k |
-| 8 GB | MoE | LFM2.5-8B-A1B | Q4_K_M | 131 072 | 7.33 | +0.67 | ~898 k |
-| 8 GB | dense | Llama 3.1 8B | Q4_K_M | 32 768 | 7.71 | +0.29 | ~224 k |
-| 16 GB | MoE | Qwen3.6-35B-A3B | IQ3_S | 131 072 | 14.16 | +1.84 | ~898 k |
-| 16 GB | dense | Llama 3.1 8B | Q4_K_M | 262 144 | 14.71 | +1.29 | ~1.8 M |
+| 4 GB | dense | Llama 3.2 3B | Q4_K_M | 16 384 | 3.67 | +0.33 | ~61 k |
+| 4 GB | MoE | LFM2.5-8B-A1B | IQ2_S | 32 768 | 3.91 | +0.09 | ~122 k |
+| 8 GB | MoE | LFM2.5-8B-A1B | Q4_K_M | 131 072 | 7.33 | +0.67 | ~487 k |
+| 8 GB | dense | Llama 3.1 8B | Q4_K_M | 32 768 | 7.71 | +0.29 | ~122 k |
+| 16 GB | MoE | Qwen3.6-35B-A3B | IQ3_S | 131 072 | 14.16 | +1.84 | ~487 k |
+| 16 GB | dense | Llama 3.1 8B | Q4_K_M | 262 144 | 14.71 | +1.29 | ~975 k |
 
 > The 16 GB MoE row is capped at **128 k** — the proven-stable value on a 16 GB
 > card (256 k OOMs at ub=2048; 128 k@ub512 measured 13.7 GB). The 8 GB MoE row is
@@ -677,24 +720,28 @@ trim tokens / context too long".
 
 ## Config
 
-Defaults are the recommended values. Set any to `0` to disable.
+Defaults are the recommended values, and they depend on the mode — the column
+below reads `code` / `realtime`. Set any switch to `0` to disable it. A switch
+you set explicitly wins over the mode, so you can run `code` with one knob turned
+up without restating the rest.
 
-| Env var | Default | Meaning |
-|---------|---------|---------|
-| `SLIMTOKEN_MINIFY` | 1 | master switch; 0 = passthrough |
-| `SLIMTOKEN_MINIFY_TOOLS` | 1 | |
-| `SLIMTOKEN_MINIFY_SYSTEM` | 1 | |
-| `SLIMTOKEN_MINIFY_MESSAGES` | 1 | |
-| `SLIMTOKEN_MINIFY_DEDUP` | 1 | |
-| `SLIMTOKEN_MINIFY_DISTILL` | 1 | |
+| Env var | Default (`code` / `realtime`) | Meaning |
+|---------|-------------------------------|---------|
+| `SLIMTOKEN_MODE` | `code` | `code` (agent work) or `realtime` (STT/TTS conversation); unknown names fall back to `code` |
+| `SLIMTOKEN_MINIFY` | 1 / 1 | master switch; 0 = passthrough |
+| `SLIMTOKEN_MINIFY_TOOLS` | 0 / 1 | minify tool schemas (strips `title`/`examples`/`$comment`) |
+| `SLIMTOKEN_MINIFY_SYSTEM` | 0 / 1 | system-prompt whitespace + hedging-phrase removal |
+| `SLIMTOKEN_MINIFY_MESSAGES` | 0 / 1 | message whitespace collapse |
+| `SLIMTOKEN_MINIFY_DEDUP` | 1 / 1 | stub byte-identical duplicate tool results |
+| `SLIMTOKEN_MINIFY_DISTILL` | 1 / 1 | prose elision in turns older than the keep-last window |
 | `SLIMTOKEN_MINIFY_BUDGET` | 131072 | 0 disables hard prune (distill still runs) |
-| `SLIMTOKEN_KEEP_LAST` | 4 | recent turns kept verbatim by distill/budget |
-| `SLIMTOKEN_DEDUP_MIN_CHARS` | 200 | only dedup tool results at least this long |
-| `SLIMTOKEN_DISTILL_MAX_CHARS` | 160 | max chars per distilled old turn |
-| `SLIMTOKEN_DISTILL_INCLUDE_USER` | 0 | 1 = also distill old *user* turns (default keeps them verbatim) |
+| `SLIMTOKEN_KEEP_LAST` | 4 / 2 | recent turns kept verbatim by distill/budget/tool_compress |
+| `SLIMTOKEN_DEDUP_MIN_CHARS` | 200 / 80 | only dedup tool results at least this long |
+| `SLIMTOKEN_DISTILL_MAX_CHARS` | 4096 / 160 | max chars per distilled old turn |
+| `SLIMTOKEN_DISTILL_INCLUDE_USER` | 0 / 1 | 1 = also distill old *user* turns |
 | `SLIMTOKEN_MINIFY_TOOL_SKIP` | _(none)_ | comma-list of tool names to never minify |
-| `SLIMTOKEN_TOOL_COMPRESS` | 0 | lossy type-specific tool-result compression (opt-in) |
-| `SLIMTOKEN_MINIFY_DOM` | 0 | lossy opt-in: prune large HTML tool_results |
+| `SLIMTOKEN_TOOL_COMPRESS` | 1 / 1 | type-specific reduction of tool results older than the keep-last window (lossy) |
+| `SLIMTOKEN_MINIFY_DOM` | 0 / 0 | lossy opt-in: prune large HTML tool_results |
 | `SLIMTOKEN_MAX_TOKENS` | _(unset)_ | output-token cap (enables output filter) |
 | `SLIMTOKEN_STOP` | _(unset)_ | comma-joined stop sequences (enables output filter) |
 | `SLIMTOKEN_FILLER` | 1 | strip lead-in filler ("Sure!", "Here is the code:") from the response head; 0 = off |
@@ -757,6 +804,32 @@ safe values for your specific VRAM automatically.
 
 ## Changelog
 
+**v0.6.0 — two modes (2026-09-27).** The request pipeline now runs in one of two
+modes, and the default is the careful one. **`code`** (default) keeps `dedup` and
+`distill`, turns `tools`/`system`/`messages` **off** so nothing the model reasons
+about is reworded, raises the distill limit from 160 to 4096 chars, and never
+touches your newest turns — the file you just read and the instruction you just
+typed arrive byte-for-byte. **`realtime`** is new and deliberately lossy: it elides
+old user turns, cuts prose to 160 chars, keeps only 2 turns verbatim, and shortens
+even the newest tool result — for STT/TTS conversation where nothing is being
+built. Measured: the default mode saves **0.0%** on a spoken conversation and
+`realtime` saves **59.5%**; on an agent session the default saves **68.5%**.
+
+Three things to know before upgrading. **`tool_compress` is now ON by default** in
+both modes — it only ever shortens tool results *older* than the keep-last window,
+and `SLIMTOKEN_TOOL_COMPRESS=0` turns it back off. **The default no longer touches
+tool schemas**, so tool-calling behaviour is unchanged and a short session can
+measure 0% where the old README claimed 34%. **`SLIMTOKEN_MODE` did not exist
+before**; with it unset you get `code`, and an unrecognised name falls back to
+`code` rather than silently selecting the lossy mode.
+
+Two bugs fixed in the same hunt. Dedup keyed duplicates by message, so two tool
+results returned by *parallel* calls in one message were collapsed as a pair —
+both stubbed or neither, depending on order; it now keys on the block and keeps the
+last copy verbatim. And `tool_compress` could skeletonise the tool result of the
+turn still in flight, which is what made an agent re-run its own tool call on
+2026-09-27 — it is now behind the same keep-last guard as the rest.
+
 **v0.5.6 — loop fix (2026-09-23).** Two fixes from the same agent-loop hunt.
 The `distill` stage was rewritten loss-preserving — every code fence is kept
 byte-identical (the old version dropped all fences after the first) and prose
@@ -779,7 +852,7 @@ Slimtoken is built on excellent open-source work — huge thanks to:
 | [tiktoken](https://github.com/openai/tiktoken) | real-tokenizer token counting (no whole-body estimates) |
 | [uvloop](https://github.com/MagicStack/uvloop) | optional fast event loop |
 | [Model Context Protocol Python SDK](https://github.com/modelcontextprotocol/python-sdk) | `slimtoken-mcp` / memory MCP server |
-| [pytest](https://github.com/pytest-dev/pytest) | the 128-check test gate |
+| [pytest](https://github.com/pytest-dev/pytest) | the test gate (129 tests collected) |
 | [mypy](https://github.com/python/mypy) | static type checking in the dev toolchain |
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) | the local inference stack `config-optimizer` tunes for |
 
@@ -797,7 +870,8 @@ reimplements from scratch; credit where the ideas come from:
 ## Tests
 
 ```bash
-python3 -m pytest tests/ -q          # 128 checks — core pipeline + proxy + adapters + memory layer
+python3 -m pytest tests/ -q          # 129 tests — everything, incl. memory + MCP + token-guard
+python3 tests/test_all.py            # 224 checks in 26 groups — the pipeline suite, per-check output
 ```
 
 Cover fence byte-identity, pair-safety, dedup, distill, ≥50% default reduction
