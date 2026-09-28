@@ -862,6 +862,78 @@ The bottom row is the reason two modes exist: on a conversation the default save
 - **`distill` is now loss-preserving.** Every code fence is kept byte-identical (the old version dropped all fences after the first), and prose keeps head + tail with an explicit `[slimtoken: N chars elided]` marker instead of a silent chop.
 - **Memory search no longer matches the whole query as one substring** (`LIKE '%whole query%'`); it is per-token with AND/OR ranking. That fix landed in the deployed CortexLLM memory MCP server, not in this package — the bundled `slimtoken.memory.search()` remains a plain keyword-substring search over hot.
 
+**v0.5.5 (2026-09-23) — deploy modes, proxy and filter fixes.**
+
+### Changed
+
+- **Two deployment shapes documented** — a minimal lane (distill + dedup in front of a cloud endpoint) versus the full pipeline (in front of a local model), with the environment pins for each.
+- `install.sh` trimmed; version aligned to the tags.
+
+### Fixed
+
+- `output_filter`, `tokencount` and proxy fixes from the cross-repo audit.
+
+### Added
+
+- New token-guard test suite.
+
+**v0.5.4 (2026-09-10) — README command list.**
+
+### Added
+
+- **README: new Command list section** — every CLI command with a one-line purpose and its key flags (`serve`, `install`, `uninstall`, `optimize`, `presets`, `high-context`, `config-optimizer`, `latency`, `lazy-mcp`), plus the installed entry points (`slimtoken-mcp`, `slimtoken-reframe-mcp`, `slimtoken-serve`).
+
+### Changed
+
+- `pyproject` version aligned to the tag (0.5.4). Docs only — no code changes.
+
+**v0.5.3 (2026-09-10) — command-honesty fixes.**
+
+### Fixed
+
+- **`config-optimizer` with no arguments now prints a clean usage error** instead of a raw traceback.
+- **`config-optimizer` size-only runs show `-m <model.gguf>`** instead of an empty model slot.
+- **`high-context` explains the red% column** — it is one measured pipeline reduction on a sample bloated payload, not a per-model number, and the section now shows the effective-context formula.
+- **`pyproject` version aligned with the release tags** — installed metadata was stuck at 0.5.0.
+
+119 tests pass.
+
+**v0.5.2 (2026-09-10) — output-honesty fix.**
+
+Patch release, no behavior changes in the pipeline.
+
+### Fixed
+
+- **`slimtoken presets --measure` stamped the same 85.4% on every model row**, which read as a hardcoded placeholder. It now prints the pipeline reduction once as a footer, noting that it is a whole-pipeline number.
+
+**v0.5.1 (2026-09-10) — README comparisons.**
+
+### Added
+
+- **README: versus token-compression systems** — LLMLingua, Gisting, provider prompt caching, truncation.
+- **README: versus agent-memory systems** — mem0, Zep/Graphiti, Letta/MemGPT, LangChain memory.
+- Caveats stated in the section: prompt caching composes rather than competes; LLMLingua compresses harder but needs a model and a GPU; no embeddings, graph or extraction-LLM by design.
+
+**v0.5.0 (2026-09-09) — agent memory built in.**
+
+### Added
+
+- **A memory layer is built in.** The separate "cortexllm" project is now part of slimtoken as `slimtoken.memory` — a persistent, disk-based memory, so notes written now are still there next session, plus safety rails that catch runaway loops and bad tool calls.
+- **An MCP server for the memory.** Agents that speak MCP read and write it directly (`pip install "slimtoken[mcp]"`).
+
+### Changed
+
+- **One project to install.** `pip install slimtoken` now covers both token compression and agent memory. The old project's name is retired; existing memory data keeps working where it is.
+- **Nothing removed.** All previous compression features work exactly as before. The test suite grew from 32 checks to 119, all passing.
+
+**v0.4.0 (2026-08-24).**
+
+### Changed
+
+- **Lossless pipeline by default.**
+- **Cython-by-default native build.**
+- **Prompt reframe** on CPU.
+
 ## Credits & Thanks
 
 Slimtoken is built on excellent open-source work — huge thanks to:
