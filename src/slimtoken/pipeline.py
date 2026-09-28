@@ -309,7 +309,9 @@ def minify_request(body: dict, cfg: MinifyConfig) -> tuple:
     if cfg.tool_compress and "messages" in nb:
         try:
             from .tool_result_compress import compress_messages
-            nb["messages"], n = compress_messages(nb.get("messages"))
+            # keep_last so the newest turns' tool output is never skeletonised:
+            # only OLD results (already reasoned over) get compressed.
+            nb["messages"], n = compress_messages(nb.get("messages"), keep_last=cfg.keep_last)
             if n and stats is not None:
                 stats.tool_compressed = n
         except Exception as e:

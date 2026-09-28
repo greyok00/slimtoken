@@ -555,6 +555,17 @@ def test_tool_result_compress():
 
     check("tool_result content rewritten", new[1]["content"][0]["content"] != msgs[1]["content"][0]["content"])
 
+    # 2026-09-27: keep_last must protect the newest turns. Without it the stage
+    # skeletonised the result of the tool the model had JUST called — a 400-line
+    # read came back as head 5 + "375 lines omitted" + tail 5 — so the model
+    # could not see the evidence it asked for and re-ran the call. That is the
+    # request loop observed on 2026-09-27 01:34. Compressing OLD results is the
+    # useful half; this pins that split so it cannot silently regress.
+    new, n = compress_messages(copy.deepcopy(msgs), keep_last=2)
+    check("keep_last compresses only older results", n == 1)
+    check("keep_last leaves newest result verbatim", new[3]["content"][0]["content"] == ls)
+    check("keep_last leaves message count unchanged", len(new) == len(msgs))
+
 
 def test_output_filter():
 
