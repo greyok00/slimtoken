@@ -40,9 +40,9 @@ slimtoken modes --measure
 
 ### Two modes — `code` (default) and `realtime`
 
-slimtoken runs in one of **two modes**, selected by `SLIMTOKEN_MODE`, and the
-mode decides how much of a request is allowed to change. `slimtoken modes`
-lists them; `slimtoken modes --measure` prints what each one saves.
+slimtoken runs in one of **two modes**, selected by `SLIMTOKEN_MODE`, and the mode
+decides how much of a request is allowed to change. The command above prints what
+each one saves.
 
 **`code` is the default, and it is the one for working on code.** It removes a
 tool result that is byte-identical to an earlier one, prose in an assistant turn
@@ -523,23 +523,16 @@ buckets.
 
 ## Two modes, one config
 
-`SLIMTOKEN_MODE` picks one of two named starting points; everything else is a raw
-`SLIMTOKEN_*` env switch, and any switch you set explicitly overrides the mode for
-that one knob.
+`SLIMTOKEN_MODE` picks one of two named starting points — the two tables under
+**Token reduction** above show exactly what each one does to your bytes. Everything
+else is a raw `SLIMTOKEN_*` env switch, and any switch you set explicitly overrides
+the mode for that one knob: set `SLIMTOKEN_KEEP_LAST=8` under `code` and the rest of
+`code` still applies.
 
-- **`code`** (default) — for an agent working on code. Duplicate tool results are
-  stubbed, prose in old assistant turns is shortened, the middle of an *old* file
-  read is replaced with a marker, tool schemas are left exactly as written, and
-  your newest turns pass through byte-for-byte.
-- **`realtime`** — for talking to a model, not building with one. Elides old user
-  turns as well as assistant turns, cuts prose to 160 characters a turn, and
-  shortens even the newest tool result. Do not run agent work in this mode.
-
-A mode is a set of starting values, not a lock — set `SLIMTOKEN_KEEP_LAST=8` under
-`code` and the rest of code mode still applies. `slimtoken modes` prints both modes
-with their stage lists; `slimtoken modes --measure` prints what each one actually
-saves on the built-in fixtures. An unrecognised mode name falls back to `code` and
-says so on stderr, so a typo can never silently select the lossy mode.
+`slimtoken modes` prints both modes with their stage lists, and
+`slimtoken modes --measure` prints what each one saves on the built-in fixtures. An
+unrecognised mode name falls back to `code` and says so on stderr, so a typo can
+never silently select the lossy mode.
 
 The things you might actually want to do:
 
