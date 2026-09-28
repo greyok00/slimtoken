@@ -38,10 +38,10 @@ command, on your own machine, without trusting this file:
 slimtoken modes --measure
 ```
 
-### Two profiles — `code` (default) and `realtime`
+### Two modes — `code` (default) and `realtime`
 
-slimtoken runs in one of **two profiles**, selected by `SLIMTOKEN_MODE`, and the
-profile decides how much of a request is allowed to change. `slimtoken modes`
+slimtoken runs in one of **two modes**, selected by `SLIMTOKEN_MODE`, and the
+mode decides how much of a request is allowed to change. `slimtoken modes`
 lists them; `slimtoken modes --measure` prints what each one saves.
 
 **`code` is the default, and it is the one for working on code.** It removes a
@@ -66,15 +66,15 @@ its own tool call.
 | repeated reads | 8 turns, the same large file read every time | **−73.1%** | −85.3% |
 | spoken conversation | no tools, no code, no file reads | **0.0%** | −59.5% |
 
-The bottom row is the whole reason two profiles exist. On a conversation the
-default profile saves **nothing at all** — there is no duplicate tool result to
+The bottom row is the whole reason two modes exist. On a conversation the
+default mode saves **nothing at all** — there is no duplicate tool result to
 stub and no file read to shorten, so the only lever left is prose elision, which
 is lossy and therefore not in the default. Point the default at agent work and it
 earns its keep; point it at speech and it does nothing.
 
-### What each profile does to your bytes
+### What each mode does to your bytes
 
-Neither profile is lossless in general, and "minimal" is a claim about *which*
+Neither mode is lossless in general, and "minimal" is a claim about *which*
 bytes move, so here is the whole of it:
 
 | | `code` (default) | `realtime` |
@@ -167,7 +167,7 @@ model that must see raw tool output verbatim). Opt out cleanly:
 - **Full removal:** `slimtoken uninstall` — restores your prior
   `ANTHROPIC_BASE_URL` and removes the marker block.
 
-### Two-profile deploy
+### Two-mode deploy
 
 One proxy process runs one pipeline, and `SLIMTOKEN_MODE` picks which — so the
 common case is one process with one env line, not two services:
@@ -825,41 +825,42 @@ safe values for your specific VRAM automatically.
 
 ## Changelog
 
-**v0.6.0 — two modes (2026-09-27).** The request pipeline now runs in one of two
-modes, and the default is the careful one. **`code`** (default) keeps `dedup` and
-`distill`, turns `tools`/`system`/`messages` **off** so nothing the model reasons
-about is reworded, raises the distill limit from 160 to 4096 chars, and never
-touches your newest turns — the file you just read and the instruction you just
-typed arrive byte-for-byte. **`realtime`** is new and deliberately lossy: it elides
-old user turns, cuts prose to 160 chars, keeps only 2 turns verbatim, and shortens
-even the newest tool result — for STT/TTS conversation where nothing is being
-built. Measured: the default mode saves **0.0%** on a spoken conversation and
-`realtime` saves **59.5%**; on an agent session the default saves **68.5%**.
+**v0.6.0 (2026-09-27)**
 
-Three things to know before upgrading. **`tool_compress` is now ON by default** in
-both modes — it only ever shortens tool results *older* than the keep-last window,
-and `SLIMTOKEN_TOOL_COMPRESS=0` turns it back off. **The default no longer touches
-tool schemas**, so tool-calling behaviour is unchanged and a short session can
-measure 0% where the old README claimed 34%. **`SLIMTOKEN_MODE` did not exist
-before**; with it unset you get `code`, and an unrecognised name falls back to
-`code` rather than silently selecting the lossy mode.
+Two request-pipeline modes, and the default is the careful one.
 
-Two bugs fixed in the same hunt. Dedup keyed duplicates by message, so two tool
-results returned by *parallel* calls in one message were collapsed as a pair —
-both stubbed or neither, depending on order; it now keys on the block and keeps the
-last copy verbatim. And `tool_compress` could skeletonise the tool result of the
-turn still in flight, which is what made an agent re-run its own tool call on
-2026-09-27 — it is now behind the same keep-last guard as the rest.
+### Added
 
-**v0.5.6 — loop fix (2026-09-23).** Two fixes from the same agent-loop hunt.
-The `distill` stage was rewritten loss-preserving — every code fence is kept
-byte-identical (the old version dropped all fences after the first) and prose
-keeps head + tail with an explicit `[slimtoken: N chars elided]` marker
-instead of a silent chop. The memory-search fix — replacing whole-query
-substring matching (`LIKE '%whole query%'`) with per-token AND/OR-rank search
-— landed in the deployed CortexLLM memory MCP server, not in this package;
-the bundled `slimtoken.memory.search()` remains a plain keyword-substring
-search over hot.
+- **`SLIMTOKEN_MODE`** selects the mode. It did not exist before; with it unset you get `code`, and an unrecognised name falls back to `code` rather than silently selecting the lossy mode. `slimtoken modes` lists them, `slimtoken modes --measure` prints what each one saves.
+- **`realtime` mode** — for STT/TTS conversation where nothing is being built. It elides old user turns as well as assistant turns, cuts prose to 160 characters a turn, keeps only 2 turns verbatim, and shortens even the newest tool result.
+
+### Changed
+
+- **`code` is the default mode.** It keeps `dedup` and `distill` and turns `tools`, `system` and `messages` off, so nothing the model reasons about is reworded. The distill limit rises from 160 to 4096 characters. It never touches your newest turns: the file you just read and the instruction you just typed arrive byte-for-byte.
+- **`tool_compress` is now ON by default**, in both modes. It only ever shortens tool results older than the keep-last window. `SLIMTOKEN_TOOL_COMPRESS=0` turns it back off.
+- **The default mode no longer touches tool schemas**, so tool-calling behaviour is unchanged. A short session can measure 0% where the old README claimed 34%.
+
+### Fixed
+
+- **Parallel tool results were collapsed as a pair.** Dedup keyed duplicates by message, so two tool results returned by parallel calls in one message were stubbed or kept together, depending on order. It now keys on the block and keeps the last copy verbatim.
+- **`tool_compress` could skeletonise the tool result of the turn still in flight**, which is what made an agent re-run its own tool call on 2026-09-27. It is now behind the same keep-last guard as everything else.
+
+### Measured
+
+| Fixture | `code` (default) | `realtime` |
+|---------|-----------------:|-----------:|
+| agent session — 8 turns, a different real file read each | **−68.5%** | −70.9% |
+| repeated reads — 8 turns, the same large file read every time | **−73.1%** | −85.3% |
+| spoken conversation — no tools, no code, no file reads | **0.0%** | −59.5% |
+
+The bottom row is the reason two modes exist: on a conversation the default saves nothing at all — there is no duplicate tool result to stub and no file read to shorten — so the only lever left is prose elision, which is lossy and therefore not in the default.
+
+**v0.5.6 (2026-09-23) — loop fix.**
+
+### Fixed
+
+- **`distill` is now loss-preserving.** Every code fence is kept byte-identical (the old version dropped all fences after the first), and prose keeps head + tail with an explicit `[slimtoken: N chars elided]` marker instead of a silent chop.
+- **Memory search no longer matches the whole query as one substring** (`LIKE '%whole query%'`); it is per-token with AND/OR ranking. That fix landed in the deployed CortexLLM memory MCP server, not in this package — the bundled `slimtoken.memory.search()` remains a plain keyword-substring search over hot.
 
 ## Credits & Thanks
 
