@@ -46,7 +46,6 @@ def dedup_tool_results(messages: List[Dict], stats: Dict, min_chars: int = DEFAU
         return messages
 
 
-    latest: Dict[str, int] = {}
     occurrences: List[tuple] = []
     for mi, msg in enumerate(messages):
         if not isinstance(msg, dict):
@@ -61,26 +60,21 @@ def dedup_tool_results(messages: List[Dict], stats: Dict, min_chars: int = DEFAU
             n = _content_len(rc)
             if n < min_chars:
                 continue
-            key = _content_key(rc)
-            latest[key] = mi
-            occurrences.append((mi, bi, key, rc, n))
+            occurrences.append((mi, bi, _content_key(rc), rc, n))
 
 
-    from collections import Counter
-    key_msg_counts = Counter()
-    for mi, bi, key, rc, n in occurrences:
-        key_msg_counts[key] += 1
-    dup_keys = {k for k, cnt in key_msg_counts.items() if cnt > 1}
-    if not dup_keys:
-        return messages
-
+    # Kept in step with pipeline.optimize_messages (the live path): keep the LAST
+    # copy verbatim and stub earlier ones, ordered by (mi, bi) rather than by
+    # message, so duplicates among PARALLEL tool calls in a single turn — which
+    # land in one canonical message — are collapsed too.
+    last_occ: Dict[str, tuple] = {}
+    for mi, bi, key, _rc, _n in occurrences:
+        last_occ[key] = (mi, bi)
 
     stubs: Dict[tuple, Any] = {}
     count = 0
     for mi, bi, key, rc, n in occurrences:
-        if key not in dup_keys:
-            continue
-        if mi < latest[key]:
+        if last_occ.get(key) != (mi, bi):
             stubs[(mi, bi)] = _stub_content(rc, n)
             count += 1
     if not stubs:

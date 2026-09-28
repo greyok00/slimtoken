@@ -158,7 +158,6 @@ def optimize_messages(messages, cfg: MinifyConfig, stats: MinifyStats):
 
     stubs: Dict[tuple, object] = {}
     if dedup_on:
-        latest: Dict[str, int] = {}
         occurrences = []
         for mi, msg in enumerate(messages):
             if not isinstance(msg, dict):
@@ -173,15 +172,20 @@ def optimize_messages(messages, cfg: MinifyConfig, stats: MinifyStats):
                 nlen = _content_len(rc)
                 if nlen < cfg.dedup_min_chars:
                     continue
-                key = _content_key(rc)
-                latest[key] = mi
-                occurrences.append((mi, bi, key, rc, nlen))
-        key_counts = Counter()
-        for _mi, _bi, key, _rc, _nlen in occurrences:
-            key_counts[key] += 1
-        dup_keys = {k for k, c in key_counts.items() if c > 1}
+                occurrences.append((mi, bi, _content_key(rc), rc, nlen))
+        # 2026-09-27: keep the LAST copy of a repeated result verbatim and stub
+        # every earlier one, ordered by (mi, bi) — NOT by message alone. Ordering
+        # by message was why this stage never fired on the agent's real traffic:
+        # the model emits several tool_use blocks in ONE assistant turn, so their
+        # results arrive inside a single canonical message, and the old rule
+        # ("stub only if it sits in an EARLIER message") could never match them.
+        # Measured on a real session: 10 parallel calls, 4 byte-identical
+        # 753-char results, dedup fired 0 times, lane reported 0% saved.
+        last_occ: Dict[str, tuple] = {}
+        for mi, bi, key, _rc, _nlen in occurrences:
+            last_occ[key] = (mi, bi)
         for mi, bi, key, rc, nlen in occurrences:
-            if key in dup_keys and mi < latest.get(key, mi):
+            if last_occ.get(key) != (mi, bi):
                 stubs[(mi, bi)] = _stub_content(rc, nlen)
         if stubs and stats is not None:
             stats.dedup_count = len(stubs)
