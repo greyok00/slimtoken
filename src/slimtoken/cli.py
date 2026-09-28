@@ -251,6 +251,49 @@ def cmd_optimize(args):
     return 0
 
 
+def cmd_modes(args):
+    """List the modes, and with --measure say what each one actually saves.
+
+    The two payload shapes below are the two things a mode can be pointed at:
+    an agent session (tool results, file reads) and a spoken conversation. They
+    are measured separately on purpose, because the same mode can be nearly free
+    on one and nearly useless on the other — the default mode saves nothing at
+    all on a conversation, which is the whole reason the lossy mode exists.
+    """
+    from .profiles import MODES, DEFAULT_MODE, current_mode, mode_note
+    from . import model_presets as mp
+    me = current_mode()
+    print(f"modes (SLIMTOKEN_MODE=<name>; current: {me}"
+          f"{' — default' if me == DEFAULT_MODE else ''})\n")
+    for name in sorted(MODES):
+        m = MODES[name]
+        mark = "*" if name == DEFAULT_MODE else " "
+        print(f"{mark} {name}")
+        print(f"    stages            : {', '.join(sorted(m['stages'])) or '(none)'}"
+              f"{', +tool_compress' if m['tool_compress'] else ''}")
+        print(f"    keep_last         : {m['keep_last']} messages passed through untouched")
+        print(f"    distill_max_chars : {m['distill_max_chars']}"
+              f"{', user turns elided too' if m['distill_include_user'] else ''}")
+        print(f"    {mode_note(name)}")
+        print()
+    if args.measure:
+        print("measured reduction (same pipeline the proxy runs, on built-in "
+              "fixtures):")
+        print(f"  {'payload':10} {'mode':9} {'in':>8} {'out':>8} {'saved':>7}")
+        for size in ("session", "bloated", "voice"):
+            for name in sorted(MODES):
+                r = mp.measure_reduction(size, mode=name)
+                print(f"  {size:10} {name:9} {r['tokens_in']:>8} {r['tokens_out']:>8} "
+                      f"{r['reduction_pct']:>6}%")
+        print("\n  session = an 8-turn agent session, a distinct real file read per turn")
+        print("  bloated = 8 turns, the same large file read every time (dedup territory)")
+        print("  voice   = a spoken conversation: no tools, no code, no file reads")
+        print("  A mode that reads well on one payload can do nothing on another —")
+        print("  the default mode saves nothing on `voice`, which is why the lossy")
+        print("  mode exists at all.")
+    return 0
+
+
 def cmd_presets(args):
 
     from . import model_presets as mp
@@ -359,6 +402,11 @@ def main(argv=None):
     pr.add_argument("--vram-gb", type=int, default=None, help="filter to one tier (4/8/16)")
     pr.add_argument("--measure", action="store_true", help="run the pipeline to measure real reduction")
     pr.set_defaults(func=cmd_presets)
+
+    mo = sub.add_parser("modes", help="list the code/realtime modes and what each saves")
+    mo.add_argument("--measure", action="store_true",
+                    help="run the pipeline per mode and print real reduction")
+    mo.set_defaults(func=cmd_modes)
 
     hc = sub.add_parser("high-context", help="list high-context VRAM-tier presets (dense + MoE)")
     hc.add_argument("--vram-gb", type=int, default=None, help="filter to one tier (4/8/16)")

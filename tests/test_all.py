@@ -210,7 +210,11 @@ def test_distill():
             if isinstance(m.get("content"), str) and "great detail" in m["content"]:
                 intact += 1
         else:
-            if isinstance(m.get("content"), str) and "distilled" in m["content"]:
+            # the marker is "[slimtoken: N chars elided]" — this asserted the
+            # word "distilled", which distill_old_turns.py has never emitted, so
+            # the check reported distilled=0 while the stage was firing on all
+            # eight old turns. Assert the marker that exists.
+            if isinstance(m.get("content"), str) and "chars elided" in m["content"]:
                 distilled += 1
     check("distill compresses old turns", distilled >= 5, f"distilled={distilled}")
     check("distill leaves recent intact", intact >= 1, f"intact={intact}")
@@ -366,9 +370,17 @@ def test_proxy_e2e():
         time.sleep(0.3)
         got = json.loads(received["body"])
         check("proxy strips grammar", "grammar" not in got)
-        check("proxy minifies system blanks", "\n\n\n\n\n" not in got["system"])
+        # The default mode is `code`, and `code` leaves the system prompt alone:
+        # it is where the owner's own standing rules live, and the `system`
+        # stage deletes phrases out of it ("I think", "Actually", "Basically")
+        # in addition to blank lines. So the default must NOT touch it, and the
+        # blank-line collapse is checked below with the stage explicitly on.
+        check("proxy default leaves the system prompt alone",
+              got["system"] == payload["system"], f'system={got["system"]!r}')
         check("proxy preserves memory tag", "<cold_memory>" in got["system"])
         check("proxy preserves tool name", got["tools"][0]["name"] == "Read")
+        check("proxy default leaves the tool schema alone",
+              got["tools"][0]["input_schema"] == payload["tools"][0]["input_schema"])
     finally:
         p.terminate()
         try:
@@ -573,8 +585,15 @@ def test_output_filter():
 
 
     f = OutputFilter(max_tokens=None, stops=[], filler=False)
-    out = f.feed(b"event: x\ndata: {\"delta\":{\"text\":\"hello\"}}\n\n")
-    check("raw passthrough all levers off", out == b"event: x\ndata: {\"delta\":{\"text\":\"hello\"}}\n\n")
+    raw = b"event: x\ndata: {\"delta\":{\"text\":\"hello\"}}\n\n"
+    # feed() holds the last complete frame in _pending_out on purpose (see
+    # output_filter.py:152 — it has to see the NEXT frame before it can decide
+    # whether a trailing "<|..." was a partial token). So a passthrough check
+    # that calls feed() alone always reads empty. Assert the real contract:
+    # nothing is corrupted, and finish() — which the proxy does call at stream
+    # end, proxy.py:401 — releases it.
+    out = f.feed(raw) + f.finish()
+    check("raw passthrough all levers off", out == raw, f"out={out!r}")
 
 
 
@@ -604,8 +623,8 @@ def test_output_filter():
 
 
     f = OutputFilter(max_tokens=2, stops=[], filler=False)
-    out = f.feed(b": ping\n\n")
-    check("non-data frame passes through", out == b": ping\n\n")
+    out = f.feed(b": ping\n\n") + f.finish()
+    check("non-data frame passes through", out == b": ping\n\n", f"out={out!r}")
 
 
 def test_output_filter_filler():
@@ -859,7 +878,7 @@ def test_distill_user_preserved():
                     and "Requirement 1:" in m["content"] and "Requirement 4:" in m["content"])
     asst_distilled = sum(1 for m in out
                          if m.get("role") == "assistant" and isinstance(m.get("content"), str)
-                         and "distilled" in m["content"])
+                         and "chars elided" in m["content"])
     check("audit1 default: old user requirements survive", user_full >= 4, f"user_full={user_full}")
     check("audit1 default: assistant prose distilled", asst_distilled >= 2, f"asst={asst_distilled}")
 
@@ -869,7 +888,7 @@ def test_distill_user_preserved():
                              include_user=True)
     user_distilled = sum(1 for m in out2
                          if m.get("role") == "user" and isinstance(m.get("content"), str)
-                         and "distilled" in m["content"])
+                         and "chars elided" in m["content"])
     check("audit1 opt-in compresses user turns", user_distilled >= 2, f"{user_distilled}")
 
 
@@ -882,11 +901,16 @@ def test_distill_user_preserved():
 
 
     body2 = {"system": "s", "messages": msgs}
+    # distill_max_chars stated explicitly: MinifyConfig's own default is 4096
+    # (distill_old_turns.DEFAULT_MAX_CHARS), and this fixture's turns are only
+    # 3,620 chars, so relying on the default measured "does nothing" and
+    # reported it as "the opt-in does not work".
     nb2, _ = minify_request(copy.deepcopy(body2), MinifyConfig(keep_last=4,
+                                                               distill_max_chars=160,
                                                                distill_include_user=True))
     user_dist2 = sum(1 for m in nb2["messages"]
                      if m.get("role") == "user" and isinstance(m.get("content"), str)
-                     and "distilled" in m["content"])
+                     and "chars elided" in m["content"])
     check("audit1 pipeline opt-in compresses user turns", user_dist2 >= 2, f"{user_dist2}")
 
 
@@ -994,8 +1018,8 @@ def test_output_filter_openai_delta():
     frame = ('data: ' + json.dumps({"choices": [{"delta": {
         "tool_calls": [{"id": "t", "type": "function",
                         "function": {"name": "ls", "arguments": "{}"}}]}}]}) + '\n\n').encode()
-    out = f.feed(frame)
-    check("audit3 openai non-text delta passthrough", out == frame)
+    out = f.feed(frame) + f.finish()
+    check("audit3 openai non-text delta passthrough", out == frame, f"out={out!r}")
 
 
 
@@ -1022,6 +1046,141 @@ def test_uninstall_no_duplicate():
         check("audit4 uninstall keeps original value",
               "ANTHROPIC_BASE_URL=http://127.0.0.1:9000" in text)
 
+
+
+def test_modes():
+    """The mode layer: what each mode selects, and what it does to real bodies.
+
+    Two claims are pinned behaviourally, because they are the two that a future
+    edit is most likely to quietly break: the default mode must leave the NEWEST
+    tool result byte-identical (that is the loop guard), and it must be a no-op
+    on a spoken conversation (that is the reason the lossy mode exists at all —
+    if the default ever starts compressing conversation, this test says so
+    instead of letting the realtime mode look redundant).
+    """
+    import contextlib
+    import io
+    from slimtoken import profiles
+    from slimtoken.model_presets import _PAYLOADS
+
+    @contextlib.contextmanager
+    def env(**kv):
+        saved = {k: os.environ.get(k) for k in kv}
+        try:
+            for k, v in kv.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            yield
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    with env(SLIMTOKEN_MODE=None):
+        cfg = profiles.build_config()
+        check("default mode is code", profiles.current_mode() == "code")
+        check("code mode leaves tool schemas alone", "tools" not in cfg.enabled_stages,
+              f"stages={sorted(cfg.enabled_stages)}")
+        check("code mode keeps dedup + distill",
+              {"dedup", "distill"} <= cfg.enabled_stages)
+        check("code mode guards the newest turns", cfg.keep_last == 4, f"keep_last={cfg.keep_last}")
+        check("code mode leaves user turns alone", cfg.distill_include_user is False)
+        check("code mode does not elide short prose", cfg.distill_max_chars == 4096)
+
+    with env(SLIMTOKEN_MODE="realtime"):
+        cfg = profiles.build_config()
+        check("realtime turns every stage on",
+              {"tools", "system", "messages", "dedup", "distill"} <= cfg.enabled_stages,
+              f"stages={sorted(cfg.enabled_stages)}")
+        check("realtime elides user turns too", cfg.distill_include_user is True)
+        check("realtime elides aggressively", cfg.distill_max_chars == 160)
+        check("realtime keeps 2 messages, not 4", cfg.keep_last == 2)
+
+    # an explicit knob still beats the mode — that is how the unit file pins one
+    # stage without restating the whole mode
+    with env(SLIMTOKEN_MODE="code", SLIMTOKEN_MINIFY_TOOLS="1", SLIMTOKEN_KEEP_LAST="9"):
+        cfg = profiles.build_config()
+        check("env overrides the mode's stage set", "tools" in cfg.enabled_stages)
+        check("env overrides the mode's keep_last", cfg.keep_last == 9)
+
+    # a typo must fail toward the safe mode, never toward the lossy one
+    buf = io.StringIO()
+    with env(SLIMTOKEN_MODE="realitme"):
+        with contextlib.redirect_stderr(buf):
+            cfg = profiles.build_config()
+        check("unknown mode falls back to code", cfg.keep_last == 4
+              and cfg.distill_include_user is False, f"keep_last={cfg.keep_last}")
+        check("unknown mode says so", "realitme" in buf.getvalue(), buf.getvalue()[:60])
+
+    with env(SLIMTOKEN_MODE="realtime", SLIMTOKEN_MINIFY="0"):
+        cfg = profiles.build_config()
+        check("master off still beats the mode", not cfg.enabled_stages and not cfg.tool_compress)
+
+    # ── behaviour, not just the switchboard ──
+    session = _PAYLOADS["session"]()
+
+    def newest_result(body):
+        for m in reversed(body["messages"]):
+            c = m.get("content")
+            if isinstance(c, list):
+                for b in c:
+                    if isinstance(b, dict) and b.get("type") == "tool_result":
+                        return b["content"]
+        return None
+
+    with env(SLIMTOKEN_MODE="code"):
+        out, st = minify_request(copy.deepcopy(session), profiles.build_config())
+        tin, tout = _tok(session), _tok(out)
+        pct = 100 * (tin - tout) / tin
+        print(f"  agent session under code mode: {tin} -> {tout} tok ({pct:.1f}%)")
+        check("code mode compresses old file reads", st.tool_compressed >= 1,
+              f"compressed={st.tool_compressed}")
+        check("code mode leaves the newest read verbatim",
+              newest_result(out) == newest_result(session))
+        check("code mode leaves the last user turn verbatim",
+              out["messages"][-1] == session["messages"][-1])
+        check("code mode still saves on agent work", pct >= 40.0, f"pct={pct:.1f}")
+
+    with env(SLIMTOKEN_MODE="realtime"):
+        out, st = minify_request(copy.deepcopy(session), profiles.build_config())
+        check("realtime DOES shorten the newest read — why it is not for agents",
+              newest_result(out) != newest_result(session))
+
+    # the system prompt is where the owner's own standing rules live, so the
+    # default must hand it over byte-identical — and the `system` stage must
+    # still collapse blanks when it is deliberately turned on, or turning it off
+    # by default would have quietly retired the feature
+    sys_body = {"system": "Rules.\n\n\n\n\nMore rules. I think this matters.",
+                "messages": [{"role": "user", "content": "hi"}]}
+    with env(SLIMTOKEN_MODE="code"):
+        out, _ = minify_request(copy.deepcopy(sys_body), profiles.build_config())
+        check("code mode hands the system prompt over untouched",
+              out["system"] == sys_body["system"], f'system={out["system"]!r}')
+    with env(SLIMTOKEN_MODE="realtime"):
+        out, _ = minify_request(copy.deepcopy(sys_body), profiles.build_config())
+        check("realtime mode does rewrite the system prompt",
+              out["system"] != sys_body["system"], f'system={out["system"]!r}')
+    with env(SLIMTOKEN_MODE="code", SLIMTOKEN_MINIFY_SYSTEM="1"):
+        out, _ = minify_request(copy.deepcopy(sys_body), profiles.build_config())
+        check("the system stage still collapses blanks when switched on",
+              "\n\n\n\n\n" not in out["system"], f'system={out["system"]!r}')
+
+    voice = _PAYLOADS["voice"]()
+    reds = {}
+    for name in ("code", "realtime"):
+        with env(SLIMTOKEN_MODE=name):
+            out, _ = minify_request(copy.deepcopy(voice), profiles.build_config())
+            tin = _tok(voice)
+            reds[name] = round(100 * (tin - _tok(out)) / tin, 1)
+    print(f"  spoken conversation: code {reds['code']}% vs realtime {reds['realtime']}%")
+    check("code mode is a no-op on a conversation", reds["code"] == 0.0,
+          f"{reds['code']}%")
+    check("realtime mode is the one that helps a conversation",
+          reds["realtime"] >= 25.0, f"{reds['realtime']}%")
 
 
 def test_context_presets():
@@ -1078,7 +1237,7 @@ def main():
              test_adapters, test_distill_user_preserved, test_json_tail_recall,
              test_source_tail_recall, test_openai_multimodal_roundtrip,
              test_output_filter_openai_delta, test_uninstall_no_duplicate,
-             test_context_presets]
+             test_context_presets, test_modes]
     print(f"slimtoken v{__version__} — running {len(tests)} test groups")
     for t in tests:
         print(f"\n[{t.__name__}]")
