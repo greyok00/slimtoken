@@ -38,10 +38,11 @@ command, on your own machine, without trusting this file:
 slimtoken modes --measure
 ```
 
-### Two modes — the difference is what may be touched
+### Two profiles — `code` (default) and `realtime`
 
-slimtoken runs in one of two modes, selected by `SLIMTOKEN_MODE`, and the mode
-decides how much of a request is allowed to change.
+slimtoken runs in one of **two profiles**, selected by `SLIMTOKEN_MODE`, and the
+profile decides how much of a request is allowed to change. `slimtoken modes`
+lists them; `slimtoken modes --measure` prints what each one saves.
 
 **`code` is the default, and it is the one for working on code.** It removes a
 tool result that is byte-identical to an earlier one, prose in an assistant turn
@@ -65,11 +66,31 @@ its own tool call.
 | repeated reads | 8 turns, the same large file read every time | **−73.1%** | −85.3% |
 | spoken conversation | no tools, no code, no file reads | **0.0%** | −59.5% |
 
-The bottom row is the whole reason two modes exist. On a conversation the default
-mode saves **nothing at all** — there is no duplicate tool result to stub and no
-file read to shorten, so the only lever left is prose elision, which is lossy and
-therefore not in the default. Point the default at agent work and it earns its
-keep; point it at speech and it does nothing.
+The bottom row is the whole reason two profiles exist. On a conversation the
+default profile saves **nothing at all** — there is no duplicate tool result to
+stub and no file read to shorten, so the only lever left is prose elision, which
+is lossy and therefore not in the default. Point the default at agent work and it
+earns its keep; point it at speech and it does nothing.
+
+### What each profile does to your bytes
+
+Neither profile is lossless in general, and "minimal" is a claim about *which*
+bytes move, so here is the whole of it:
+
+| | `code` (default) | `realtime` |
+|---|---|---|
+| Your newest turns | **byte-for-byte** | shortened |
+| Fenced code blocks | byte-for-byte, always | byte-for-byte, always |
+| Tool schemas | untouched — tool-calling behaviour is unchanged | `title` / `examples` / `$comment` stripped |
+| Duplicate tool result | older copy stubbed; the same bytes are still later in the conversation, so nothing leaves it | same |
+| Old assistant prose | shortened, only beyond the last 4 turns | shortened to 160 chars, beyond the last 2 |
+| Old tool result | middle replaced with `[slimtoken-compressed] N B -> M B` | same, and it applies to the newest result too |
+
+So `code` is lossless where it matters and *marked* where it is not: your newest
+turns and every fence are untouched, dedup loses nothing from the conversation as
+a whole, and anything shortened is visibly shortened — the model is told bytes
+were dropped, and how many. `realtime` gives up the newest turns to buy response
+speed, which is the trade you want when you are talking rather than building.
 
 ### Output — the filter (on by default)
 
