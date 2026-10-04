@@ -1090,6 +1090,8 @@ def test_modes():
         check("code mode guards the newest turns", cfg.keep_last == 4, f"keep_last={cfg.keep_last}")
         check("code mode leaves user turns alone", cfg.distill_include_user is False)
         check("code mode does not elide short prose", cfg.distill_max_chars == 4096)
+        check("code mode never rewrites tool results", cfg.tool_compress is False,
+              f"tool_compress={cfg.tool_compress}")
 
     with env(SLIMTOKEN_MODE="realtime"):
         cfg = profiles.build_config()
@@ -1132,18 +1134,62 @@ def test_modes():
                         return b["content"]
         return None
 
+    def all_results(body):
+        found = []
+        for m in body["messages"]:
+            c = m.get("content")
+            if isinstance(c, list):
+                for b in c:
+                    if isinstance(b, dict) and b.get("type") == "tool_result":
+                        found.append(b["content"])
+        return found
+
     with env(SLIMTOKEN_MODE="code"):
         out, st = minify_request(copy.deepcopy(session), profiles.build_config())
         tin, tout = _tok(session), _tok(out)
         pct = 100 * (tin - tout) / tin
         print(f"  agent session under code mode: {tin} -> {tout} tok ({pct:.1f}%)")
-        check("code mode compresses old file reads", st.tool_compressed >= 1,
+        check("code mode compresses no tool result at all", st.tool_compressed == 0,
               f"compressed={st.tool_compressed}")
+        check("code mode leaves every read byte-identical",
+              all_results(out) == all_results(session),
+              f"{len(all_results(out))} results")
         check("code mode leaves the newest read verbatim",
               newest_result(out) == newest_result(session))
         check("code mode leaves the last user turn verbatim",
               out["messages"][-1] == session["messages"][-1])
-        check("code mode still saves on agent work", pct >= 40.0, f"pct={pct:.1f}")
+        # Eight DISTINCT reads, no duplicates, and one-line assistant turns.
+        # Every lossless lever is now off by construction, so the honest result
+        # is that this body comes out UNCHANGED. That is not a regression: it is
+        # what "no result is ever rewritten" means on a body with nothing
+        # duplicated and no long prose to elide. The mode still earns its keep
+        # on repeated reads, which is the next block.
+        check("code mode is byte-identical on all-distinct reads", out == session,
+              f"pct={pct:.1f}")
+        check("code mode never grows the body", pct >= 0.0, f"pct={pct:.1f}")
+
+    # the compressor is not removed, it is just no longer the mode's default —
+    # a lane that wants old tool results shortened still asks for it by name
+    with env(SLIMTOKEN_MODE="code", SLIMTOKEN_TOOL_COMPRESS="1"):
+        out, st = minify_request(copy.deepcopy(session), profiles.build_config())
+        check("explicit tool_compress still shortens old file reads",
+              st.tool_compressed >= 1, f"compressed={st.tool_compressed}")
+        check("explicit tool_compress still leaves the newest read verbatim",
+              newest_result(out) == newest_result(session))
+
+    # where the lossless levers DO bite: the same file read every turn is a
+    # duplicate, and dedup stubs the older copies while the last one stays
+    # verbatim — nothing a model read is rewritten
+    repeated = _PAYLOADS["bloated"]()
+    with env(SLIMTOKEN_MODE="code"):
+        out, st = minify_request(copy.deepcopy(repeated), profiles.build_config())
+        rin, rout = _tok(repeated), _tok(out)
+        rpct = 100 * (rin - rout) / rin
+        print(f"  repeated reads under code mode: {rin} -> {rout} tok ({rpct:.1f}%)")
+        check("code mode still saves on repeated reads (dedup)", rpct >= 40.0,
+              f"pct={rpct:.1f}")
+        check("dedup rewrote no tool result either", st.tool_compressed == 0,
+              f"compressed={st.tool_compressed}")
 
     with env(SLIMTOKEN_MODE="realtime"):
         out, st = minify_request(copy.deepcopy(session), profiles.build_config())

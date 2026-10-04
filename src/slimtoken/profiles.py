@@ -41,13 +41,15 @@ def _env_tool_skip() -> Set[str]:
 #     * a tool result byte-identical to an earlier one — the duplicate is
 #       stubbed and the LAST copy stays verbatim (dedup);
 #     * prose in assistant turns more than `keep_last` messages old — fenced
-#       blocks survive that verbatim (distill_old_turns.py:52);
-#     * the middle of an OLD tool result — kept as head + tail with a marker
-#       saying what was dropped (`[slimtoken-compressed] N B -> M B`), and only
-#       for results older than the last `keep_last` messages (tool_compress).
-#   So: this mode DOES shorten old file reads. What it guarantees is that the
-#   evidence you just fetched, and the words you just typed, reach the model
-#   unaltered — not that nothing is ever abbreviated.
+#       blocks survive that verbatim (distill_old_turns.py:52).
+#   It does NOT touch tool results at all: no result, old or new, is ever
+#   rewritten (tool_compress is OFF here as of 2026-10-03). Before that it
+#   shortened the middle of an old result and marked the gap, which meant the
+#   mode's promise — newest turns byte-for-byte — held while an older read the
+#   model might still return to did not.
+#   So: the evidence you fetched reaches the model unaltered, whoever fetched it
+#   and whenever. What this mode still shortens is OLD ASSISTANT PROSE, and it
+#   marks every elision when it does.
 #   The `tools` stage is deliberately OFF here: it rewrites tool schemas
 #   (strips `title`/`examples`/`$comment`), which changes how a model fills in
 #   arguments, so a tool-calling agent must opt into it, not inherit it.
@@ -75,7 +77,14 @@ MODES: Dict[str, Dict] = {
         "keep_last": 4,
         "distill_max_chars": 4096,
         "distill_include_user": False,
-        "tool_compress": True,
+        # 2026-10-03 (owner): "prevent the mangling." This was True, so `code`
+        # mode shortened the middle of OLD tool results and stamped
+        # "[slimtoken-compressed] N B -> M B" over the gap. The agent lane only
+        # escaped it via a SLIMTOKEN_TOOL_COMPRESS=0 pin in the unit file, which
+        # means the default and the mode's own promise ("lossless where it
+        # matters") disagreed. Default OFF; a lane that wants it sets
+        # SLIMTOKEN_TOOL_COMPRESS=1 explicitly, same as any other knob.
+        "tool_compress": False,
         "minify_dom": False,
         "dedup_min_chars": 200,
         "token_budget": 131072,
@@ -99,11 +108,11 @@ DEFAULT_MODE = _MODE_CODE
 # not marketing: the realtime entry says what it costs you.
 MODE_NOTES: Dict[str, str] = {
     _MODE_CODE:
-        "default. Your newest turns pass through verbatim — the file you just "
-        "read and the instruction you just typed reach the model unaltered. What "
-        "gets shortened is OLD material: a duplicate tool result, prose in an "
-        "old assistant turn, and the middle of an old file read (marked with "
-        "what was dropped). Tool schemas are left exactly as written.",
+        "default. No tool result is ever rewritten, old or new — the file you "
+        "just read and the file you read ten turns ago both reach the model "
+        "byte-for-byte. What gets shortened is a tool result byte-identical to "
+        "an earlier one (the duplicate is stubbed, the last copy stays) and prose "
+        "in an old assistant turn. Tool schemas are left exactly as written.",
     _MODE_REALTIME:
         "lossy, for STT/TTS conversation where nothing is being built. Elides "
         "user turns too, cuts prose to 160 chars/turn, and shortens even the "

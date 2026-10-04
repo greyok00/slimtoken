@@ -1,6 +1,6 @@
 ---
 name: slimtoken-optimizer
-description: Shrink LLM prompts before sending them — collapse duplicate tool results, distill old turns, minify tool schemas and system prompts, prune to a token budget, and (opt-in) prune large HTML tool results. On the output side, the proxy can cap/truncate streamed completions and strip lead-in filler. Lossy by default (distill + tool-result compression) for the most context headroom; disable any stage via the SLIMTOKEN_* env knobs. Works with any local or cloud model via the slimtoken CLI or MCP server.
+description: Shrink LLM prompts before sending them — collapse duplicate tool results, distill old turns, minify tool schemas and system prompts, prune to a token budget, and (opt-in) prune large HTML tool results. On the output side, the proxy can cap/truncate streamed completions and strip lead-in filler. The default `code` mode rewrites no tool result at all; the `realtime` mode is the lossy one. Any stage can be switched via the SLIMTOKEN_* env knobs. Works with any local or cloud model via the slimtoken CLI or MCP server.
 ---
 
 # slimtoken-optimizer
@@ -29,7 +29,7 @@ through the proxy.
 
 ```bash
 # Count tokens in a request (cl100k, approximate for non-cl100k models)
-slimtoken optimize --input request.json                 # always-on: full pipeline, most headroom
+slimtoken optimize --input request.json                 # default mode: dedup + distill, no tool result rewritten
 slimtoken optimize -i request.json --max-input-tokens 8192   # also prune to a budget
 # stdin works too:  cat request.json | slimtoken optimize
 
@@ -51,15 +51,23 @@ Run the server with `slimtoken-mcp` (or `python -m slimtoken.mcp_server`) and po
 your MCP client at it over stdio. The MCP tools call the same core pipeline as the
 CLI — nothing is reimplemented.
 
-## One config, no profiles
+## Two modes, plus raw switches
 
-There are no named profiles. slimtoken always runs the full pipeline by default —
-tools · system · messages · dedup · distill · tool-result compression. Every stage
-is a raw `SLIMTOKEN_*` env switch; there is no `--profile` flag.
+`SLIMTOKEN_MODE` picks one of two modes. Every stage is also a raw `SLIMTOKEN_*`
+switch, and a switch you set explicitly overrides the mode for that one knob.
+
+- **`code`** (default) — dedup + distill only. **No tool result is ever rewritten,
+  old or new**, and tool schemas are untouched. Use it for agent work.
+- **`realtime`** — every stage on, including the one that rewrites old tool
+  results and the one that strips tool-schema fields, with prose cut to 160 chars.
+  Lossy on purpose, for conversation. Do not run agent work in it.
+- `slimtoken modes` lists them; `slimtoken modes --measure` prints what each one
+  actually saves.
 
 - Turn the whole thing off: `SLIMTOKEN_MINIFY=0` (raw passthrough).
-- Turn off one lossy stage: e.g. `SLIMTOKEN_MINIFY_DISTILL=0` (keep old turns
-  verbatim) or `SLIMTOKEN_TOOL_COMPRESS=0` (keep tool results verbatim).
+- Turn off one stage: e.g. `SLIMTOKEN_MINIFY_DISTILL=0` (keep old turns
+  verbatim). `SLIMTOKEN_TOOL_COMPRESS=1` turns **on** the one stage that rewrites
+  old tool results — it is off by default in `code`.
 - Turn on the opt-in DOM stage: `SLIMTOKEN_MINIFY_DOM=1` (prune large HTML
   tool_results).
 - Output side: `SLIMTOKEN_FILLER` strips lead-in filler ("Sure!",
@@ -70,10 +78,10 @@ All stages are **pair-safe**: tool_use/tool_result pairs are never split or
 reordered, and code fences are preserved.
 
 ## Rules
-- The default is lossy — it trades a little fidelity (distilled old turns,
-  compressed tool results) for the most context headroom. Reach for
-  `SLIMTOKEN_MINIFY=0` or a per-stage kill-switch only when the user needs exact
-  fidelity (e.g. debugging, or the model must see raw tool output verbatim).
+- The default mode is not lossy on tool results — it never rewrites one. What it
+  removes is a byte-identical duplicate (lossless: those bytes are still later in
+  the conversation) and prose in old assistant turns. Reach for
+  `SLIMTOKEN_MINIFY=0` when the user needs the request forwarded untouched.
 - Never claim a reduction number — measure it (`slimtoken presets --measure` or
   the stats line from `optimize`). The software computes the real drop.
 - This skill rewrites the request; it does not change tokenizer selection or model

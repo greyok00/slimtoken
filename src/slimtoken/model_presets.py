@@ -164,7 +164,9 @@ def _payload_session() -> dict:
 
     Distinct bodies on purpose. The `bloated` fixture reads the same file every
     turn, so it measures dedup and nothing else; a real session reads different
-    files, which is the case tool_compress exists for.
+    files. Under the default `code` mode every one of those distinct reads is
+    preserved, so this fixture reports 0% — that is the honest shape of the
+    default, not a failure of a stage.
     """
     srcs = _session_sources(8)
     msgs = []
