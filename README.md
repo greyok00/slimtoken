@@ -45,12 +45,12 @@ decides how much of a request is allowed to change. The command above prints wha
 each one saves.
 
 **`code` is the default, and it is the one for working on code.** It removes a
-tool result that is byte-identical to an earlier one, prose in an assistant turn
-older than the keep-last window, and the middle of an *old* file read — the last
-one marked `[slimtoken-compressed] N B -> M B` so the model can see that
-something was dropped. It never touches your newest turns: the file you just read
-and the instruction you just typed reach the model byte-for-byte. Tool schemas
-are left exactly as written, so how the model fills in arguments is unchanged.
+tool result that is byte-identical to an earlier one, and prose in an assistant
+turn older than the keep-last window. It does not touch tool results at all —
+not an old one, not a new one. The file you just read and the file you read ten
+turns ago both reach the model byte-for-byte, so nothing you fetched is ever
+abbreviated behind your back. Tool schemas are left exactly as written, so how
+the model fills in arguments is unchanged.
 
 **`realtime` is for talking to a model, not building with one.** It elides old
 user turns as well as assistant turns, cuts prose to 160 characters a turn, and
@@ -62,15 +62,18 @@ its own tool call.
 
 | Fixture | What it represents | `code` (default) | `realtime` (lossy) |
 |---------|--------------------|-----------------:|-------------------:|
-| agent session | 8 turns, a *different* real file read each | **−68.5%** | −70.9% |
+| agent session | 8 turns, a *different* real file read each | **0.0%** | −70.9% |
 | repeated reads | 8 turns, the same large file read every time | **−73.1%** | −85.3% |
 | spoken conversation | no tools, no code, no file reads | **0.0%** | −59.5% |
 
-The bottom row is the whole reason two modes exist. On a conversation the
-default mode saves **nothing at all** — there is no duplicate tool result to
-stub and no file read to shorten, so the only lever left is prose elision, which
-is lossy and therefore not in the default. Point the default at agent work and it
-earns its keep; point it at speech and it does nothing.
+The first and last rows say the same thing about the default mode: when nothing
+is duplicated and no prose is long enough to elide, it saves **nothing at all**,
+and that is the point. Eight distinct file reads are eight distinct pieces of
+evidence and the default keeps every one of them. What it does still remove, and
+removes losslessly, is a tool result you read twice — the middle row, where it
+saves 73%. The `realtime` mode exists because it is willing to spend evidence for
+speed, which is the right trade when you are talking and the wrong one when you
+are working.
 
 ### What each mode does to your bytes
 
@@ -84,13 +87,15 @@ bytes move, so here is the whole of it:
 | Tool schemas | untouched — tool-calling behaviour is unchanged | `title` / `examples` / `$comment` stripped |
 | Duplicate tool result | older copy stubbed; the same bytes are still later in the conversation, so nothing leaves it | same |
 | Old assistant prose | shortened, only beyond the last 4 turns | shortened to 160 chars, beyond the last 2 |
-| Old tool result | middle replaced with `[slimtoken-compressed] N B -> M B` | same, and it applies to the newest result too |
+| Old tool result | **never touched** — no result is ever rewritten | middle replaced with `[slimtoken-compressed] N B -> M B`, and that applies to the newest result too |
 
-So `code` is lossless where it matters and *marked* where it is not: your newest
-turns and every fence are untouched, dedup loses nothing from the conversation as
-a whole, and anything shortened is visibly shortened — the model is told bytes
-were dropped, and how many. `realtime` gives up the newest turns to buy response
-speed, which is the trade you want when you are talking rather than building.
+So `code` is lossless where it matters: every tool result, every fence and your
+newest turns are untouched, and dedup loses nothing from the conversation as a
+whole because the bytes it stubs are still there, later. The only thing it still
+shortens is old assistant prose, and it marks every elision when it does — the
+model is told bytes were dropped, and how many. `realtime` gives up the newest
+turns to buy response speed, which is the trade you want when you are talking
+rather than building.
 
 ### Output — the filter (on by default)
 
@@ -242,7 +247,7 @@ sequenceDiagram
 | 📝 distill | Shorten old **assistant** prose beyond the last `SLIMTOKEN_KEEP_LAST` turns, to `SLIMTOKEN_DISTILL_MAX_CHARS` a turn (4096 in `code`, 160 in `realtime`). Old *user* turns are preserved verbatim unless `SLIMTOKEN_DISTILL_INCLUDE_USER=1`. Fence-aware, preserves tool blocks, no model call. | both | old assistant turns |
 | 🎯 budget | Hard token cap (`SLIMTOKEN_MINIFY_BUDGET`, 131072); drops a leading prefix pair-safely — only when over budget. | both | drops oldest |
 | 🌐 dom *(opt-in)* | `SLIMTOKEN_MINIFY_DOM=1` — prune large HTML `tool_result` payloads (strip script/style/svg, nav/footer/sidebar, `class`/`id`/`data-*`/`aria-*` attrs, collapse to text). Session-aware LRU cache. | neither | yes |
-| 🗜️ tool_compress | Type-specific reduction of large `tool_result` content (directory listings, git output, logs, JSON, source) + a `[slimtoken-compressed]` header. JSON keeps head + tail records with an omission marker (never drops a tail record); source keeps head + tail lines. Only ever applied to results older than `SLIMTOKEN_KEEP_LAST`, never to the current turn's. `SLIMTOKEN_TOOL_COMPRESS=0` disables it. | both | yes, old results |
+| 🗜️ tool_compress | Type-specific reduction of large `tool_result` content (directory listings, git output, logs, JSON, source) + a `[slimtoken-compressed]` header. JSON keeps head + tail records with an omission marker (never drops a tail record); source keeps head + tail lines. Only ever applied to results older than `SLIMTOKEN_KEEP_LAST`, never to the current turn's. **Off by default in `code`** — no tool result is rewritten there — and on in `realtime`; `SLIMTOKEN_TOOL_COMPRESS=1` turns it on explicitly. | `realtime` | yes, old results |
 
 \* dedup is lossless in practice — the latest copy is always kept verbatim; only
 stale duplicates are stubbed.
@@ -411,11 +416,9 @@ Two honest notes:
   squeezes more than a deterministic one — but it costs a model download and
   GPU time per call, and it reassembles your text. slimtoken's default path is
   deterministic and bounded in what it may touch: old user turns verbatim, tool
-  pairs intact, fenced code byte-identical, your newest turns untouched, and the
-  one stage that shortens an old file read marked so the model can see that
-  something was dropped. Against plain truncation the difference is bigger:
-  truncation throws old turns away; distill keeps a gist of each and preserves
-  user turns verbatim.
+  pairs intact, every tool result byte-identical, fenced code byte-identical.
+  Against plain truncation the difference is bigger: truncation throws old turns
+  away; distill keeps a gist of each and preserves user turns verbatim.
 
 ### vs. agent-memory systems
 
@@ -438,25 +441,25 @@ compression problem — which is why the tier system and `ColdDistiller` exist.
 
 ## Practical example — what it actually does
 
-A realistic bloated session (6 repeated file reads + verbose history, 18 KB body):
+A repeated-reads session — the same large file read on every turn, which is the
+case the default mode still compresses:
 
 ```bash
 $ slimtoken optimize -i request.json
-tokens: 4678 -> 1259  (-73.1%)
-stages: tools=0 system=True msgs=6 dedup=5 distill=4 budget_drop=0 tool_compressed=1
+tokens: 30480 -> 8206  (-73.1%)
+stages: tools=0 system=False msgs=0 dedup=7 distill=0 budget_drop=0 tool_compressed=0
 ```
 
 What each stage did to that body:
 
 | Stage | Effect on the example |
 |-------|----------------------|
-| 🔄 dedup | 5 of 6 identical file reads → `[slimtoken: identical to a later tool_result; omitted 2010 chars]` — the latest copy stays verbatim |
-| 📝 distill | 4 verbose assistant turns → first sentence + `[slimtoken: distilled from 539 chars]` |
-| 🗜️ tool_compress | the last file read → `[slimtoken-compressed] 2010B -> 1477B; source: …` (comments/blank lines dropped) |
-| 📋 system | 20 repeated banner lines → 1 |
+| 🔄 dedup | 7 of 8 identical file reads → `[slimtoken: identical to a later tool_result; omitted N chars]` — the latest copy stays verbatim |
+| 🗜️ tool_compress | **did not run.** It is off in `code`, so the newest read is byte-identical too. The same body under `SLIMTOKEN_MODE=realtime` falls to 4485 tokens (−85.3%), and that difference is exactly what the stage costs you in fidelity |
+| 📝 distill | nothing to do here — no assistant turn in this body exceeds the 4096-character limit |
 
-The model still sees every file's content (in the latest result) and every turn's
-gist — just not the redundant copies. Measure your own payload:
+The model still sees every file's content, in the latest result — just not the
+redundant copies. Measure your own payload:
 
 ```bash
 slimtoken optimize -i request.json --json     # full minified body, machine-readable
@@ -540,10 +543,10 @@ The things you might actually want to do:
   when the model must see input verbatim).
 - **Keep old user turns** — `code` already does. Only `realtime` elides them, and
   `SLIMTOKEN_DISTILL_INCLUDE_USER=0` turns even that off.
-- **Turn the lossy stage off** — `SLIMTOKEN_TOOL_COMPRESS=0`. It is ON in both
-  modes because it only ever shortens tool results *older* than the keep-last
-  window, but it is the one stage that can drop bytes from a file you read
-  earlier, so the switch is there.
+- **Leave the lossy stage off** — `code` does, by default: no tool result, old or
+  new, is ever rewritten. `realtime` turns it on, and `SLIMTOKEN_TOOL_COMPRESS=0`
+  turns it back off there too. It is the only stage that can drop bytes from a
+  file you read earlier, which is why the default mode does not use it.
 - **Opt into HTML pruning** — `SLIMTOKEN_MINIFY_DOM=1`, still off by default.
 
 See the [Config](#config) table for the full knob list. The single config
@@ -749,12 +752,12 @@ up without restating the rest.
 | `SLIMTOKEN_MINIFY_DEDUP` | 1 / 1 | stub byte-identical duplicate tool results |
 | `SLIMTOKEN_MINIFY_DISTILL` | 1 / 1 | prose elision in turns older than the keep-last window |
 | `SLIMTOKEN_MINIFY_BUDGET` | 131072 | 0 disables hard prune (distill still runs) |
-| `SLIMTOKEN_KEEP_LAST` | 4 / 2 | recent turns kept verbatim by distill/budget/tool_compress |
+| `SLIMTOKEN_KEEP_LAST` | 4 / 2 | recent turns kept verbatim by distill and budget (`realtime` applies it to tool_compress too) |
 | `SLIMTOKEN_DEDUP_MIN_CHARS` | 200 / 80 | only dedup tool results at least this long |
 | `SLIMTOKEN_DISTILL_MAX_CHARS` | 4096 / 160 | max chars per distilled old turn |
 | `SLIMTOKEN_DISTILL_INCLUDE_USER` | 0 / 1 | 1 = also distill old *user* turns |
 | `SLIMTOKEN_MINIFY_TOOL_SKIP` | _(none)_ | comma-list of tool names to never minify |
-| `SLIMTOKEN_TOOL_COMPRESS` | 1 / 1 | type-specific reduction of tool results older than the keep-last window (lossy) |
+| `SLIMTOKEN_TOOL_COMPRESS` | 0 / 1 | type-specific reduction of tool results older than the keep-last window (lossy); **off in `code`**, so no result is ever rewritten there |
 | `SLIMTOKEN_MINIFY_DOM` | 0 / 0 | lossy opt-in: prune large HTML tool_results |
 | `SLIMTOKEN_MAX_TOKENS` | _(unset)_ | output-token cap (enables output filter) |
 | `SLIMTOKEN_STOP` | _(unset)_ | comma-joined stop sequences (enables output filter) |
@@ -818,6 +821,25 @@ safe values for your specific VRAM automatically.
 
 ## Changelog
 
+**v0.7.0 (2026-10-04)**
+
+No tool result is rewritten in the default mode.
+
+### Changed
+
+- **`tool_compress` is now OFF by default in `code`.** v0.6.0 turned it on in both modes, which meant the default mode rewrote the middle of an *old* tool result and stamped `[slimtoken-compressed] N B -> M B` over the gap. The mode's promise — your newest turns arrive byte-for-byte — was true, and every shortening was marked, but an older read is still evidence the model may return to. `code` now preserves all of it. `realtime` is unchanged and stays lossy on purpose.
+- **`SLIMTOKEN_TOOL_COMPRESS=1` still turns it on.** Nothing was removed; only the default moved, so a lane that wants the old behaviour asks for it by name.
+
+### Measured
+
+| Fixture | `code` (default) | `realtime` |
+|---------|-----------------:|-----------:|
+| agent session — 8 turns, a different real file read each | **0.0%** | −70.9% |
+| repeated reads — 8 turns, the same large file read every time | **−73.1%** | −85.3% |
+| spoken conversation — no tools, no code, no file reads | **0.0%** | −59.5% |
+
+The first row is what the change costs: on a session of eight *distinct* reads there is nothing duplicated and no prose long enough to elide, so the default mode saves nothing at all — it has no lever left that does not spend evidence. It still saves 73% on repeated reads, and that removal is lossless, because the stubbed bytes are still in the conversation, later.
+
 **v0.6.0 (2026-09-27)**
 
 Two request-pipeline modes, and the default is the careful one.
@@ -847,6 +869,8 @@ Two request-pipeline modes, and the default is the careful one.
 | spoken conversation — no tools, no code, no file reads | **0.0%** | −59.5% |
 
 The bottom row is the reason two modes exist: on a conversation the default saves nothing at all — there is no duplicate tool result to stub and no file read to shorten — so the only lever left is prose elision, which is lossy and therefore not in the default.
+
+> **Superseded by the v0.7.0 entry above.** As of 2026-10-03 `code` no longer runs `tool_compress`, so the first row's `−68.5%` is now `0.0%`. This table is left as the record of what v0.6.0 shipped.
 
 **v0.5.6 (2026-09-23) — loop fix.**
 
@@ -958,7 +982,7 @@ reimplements from scratch; credit where the ideas come from:
 
 ```bash
 python3 -m pytest tests/ -q          # 129 tests — everything, incl. memory + MCP + token-guard
-python3 tests/test_all.py            # 224 checks in 26 groups — the pipeline suite, per-check output
+python3 tests/test_all.py            # 231 checks in 25 groups — the pipeline suite, per-check output
 ```
 
 Cover fence byte-identity, pair-safety, dedup, distill, ≥50% default reduction
