@@ -226,14 +226,14 @@ def compress_messages(messages, keep_last: int = 0) -> tuple:
 
     if not isinstance(messages, list):
         return messages, 0
-    # 2026-09-27: keep_last protects the newest turns. Without it this stage
-    # skeletonised the output of the tool the model had JUST called — an
-    # in-flight read of a 400-line file came back as head 5 + "375 lines
-    # omitted" + tail 5 — so the model could not see the evidence it had asked
-    # for and re-ran the call, which is the looping seen on 2026-09-27 01:34.
-    # Compressing OLD tool output is the useful half: it is what fills the
-    # context, and the model has already finished reasoning over it. Default 0
-    # keeps the old behaviour for callers that pass nothing.
+
+
+
+
+
+
+
+
     n = len(messages)
     cutoff = (n - keep_last) if keep_last > 0 and n > keep_last else n
     new = []

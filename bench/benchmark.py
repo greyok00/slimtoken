@@ -13,13 +13,13 @@ def tok(obj) -> int:
 
 
 VERBOSE_SYS = (
-    "<cold_memory>\nYou are a senior engineer. Follow project conventions strictly.\n"
-    "Never leak personal info. Use Path.home() for paths.\n</cold_memory>\n\n\n\n"
-    "You are an interactive CLI coding agent.\n\n"
-    "IMPORTANT: Assist with authorized security testing. Refuse destructive requests.\n\n"
-    "When you use a tool, explain what was done in plain language. Never dump raw tool names.\n\n\n"
+    "<cold_memory>\nLocal conventions index. Entries are appended by tooling.\n"
+    "Paths resolve through the environment layer.\n</cold_memory>\n\n\n\n"
+    "Runnable session reference with a module index.\n\n"
+    "Stages run in order with per-stage budgets and mode rules.\n\n"
+    "Explain tool results in plain language without raw identifiers.\n\n\n"
     "```python\ndef example(x):\n    return x + 1\n```\n\n\n"
-    "Be concise. Use tables when comparing. End substantive work with a STATE block."
+    "Be concise. Use tables when comparing. End substantive work with a summary."
 )
 
 def make_tool(idx: int, examples: int) -> dict:

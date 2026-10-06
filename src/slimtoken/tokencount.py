@@ -93,10 +93,10 @@ def count(text: str) -> int:
     enc = get_encoder()
     if enc is None:
         return _heuristic(text)
-    # disallow_special=False: upstream model output (e.g. GLM's literal
-    # </think>) regularly lands in request history. Raising here killed the whole
-    # request ("handle error" -> connection closed -> client timeout retry loop).
-    # Count special tokens as ordinary tokens instead — never raise.
+
+
+
+
     return _cached(key, lambda: len(enc.encode(text, disallowed_special=())))
 
 

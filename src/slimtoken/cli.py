@@ -252,14 +252,7 @@ def cmd_optimize(args):
 
 
 def cmd_modes(args):
-    """List the modes, and with --measure say what each one actually saves.
 
-    The two payload shapes below are the two things a mode can be pointed at:
-    an agent session (tool results, file reads) and a spoken conversation. They
-    are measured separately on purpose, because the same mode can be nearly free
-    on one and nearly useless on the other — the default mode saves nothing at
-    all on a conversation, which is the whole reason the lossy mode exists.
-    """
     from .profiles import MODES, DEFAULT_MODE, current_mode, mode_note
     from . import model_presets as mp
     me = current_mode()

@@ -173,14 +173,14 @@ def optimize_messages(messages, cfg: MinifyConfig, stats: MinifyStats):
                 if nlen < cfg.dedup_min_chars:
                     continue
                 occurrences.append((mi, bi, _content_key(rc), rc, nlen))
-        # 2026-09-27: keep the LAST copy of a repeated result verbatim and stub
-        # every earlier one, ordered by (mi, bi) — NOT by message alone. Ordering
-        # by message was why this stage never fired on the agent's real traffic:
-        # the model emits several tool_use blocks in ONE assistant turn, so their
-        # results arrive inside a single canonical message, and the old rule
-        # ("stub only if it sits in an EARLIER message") could never match them.
-        # Measured on a real session: 10 parallel calls, 4 byte-identical
-        # 753-char results, dedup fired 0 times, lane reported 0% saved.
+
+
+
+
+
+
+
+
         last_occ: Dict[str, tuple] = {}
         for mi, bi, key, _rc, _nlen in occurrences:
             last_occ[key] = (mi, bi)
@@ -309,8 +309,8 @@ def minify_request(body: dict, cfg: MinifyConfig) -> tuple:
     if cfg.tool_compress and "messages" in nb:
         try:
             from .tool_result_compress import compress_messages
-            # keep_last so the newest turns' tool output is never skeletonised:
-            # only OLD results (already reasoned over) get compressed.
+
+
             nb["messages"], n = compress_messages(nb.get("messages"), keep_last=cfg.keep_last)
             if n and stats is not None:
                 stats.tool_compressed = n

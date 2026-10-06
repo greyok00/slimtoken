@@ -1,23 +1,5 @@
 #!/usr/bin/env python3
-"""tools/build_opt.py — compile hot pure-Python modules to native .so via Cython.
 
-Optional but recommended. scripts/install.sh runs this by default ("Cython by
-default"). A compiled .so shadows its .py sibling in src/slimtoken/, so
-`import slimtoken.pipeline` resolves to the native build automatically (the
-package is installed editable, which puts src/ on the path). If this build is
-skipped (no Cython, no compiler), the package transparently falls back to the
-.py sources — nothing breaks either way.
-
-Modules are the hot compute paths of the minify pipeline — no I/O, no
-frameworks — so Cython's bounds-check-free loops speed up the token math.
-
-Idempotent: a module is recompiled only when its source mtime is newer than
-the existing .so. Run `python3 tools/build_opt.py --check` to report build
-state without compiling.
-
-Exit codes: 0 = ok (or build skipped gracefully), 1 = toolchain present but a
-module failed to compile.
-"""
 from __future__ import annotations
 
 import sys
@@ -27,8 +9,8 @@ REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "src" / "slimtoken"
 sys.path.insert(0, str(REPO / "src"))
 
-# Curated hot compute modules — the minify core. Keep this list small; more
-# modules = slower build.
+
+
 MODULES = (
     "pipeline.py",
     "message_minify.py",
@@ -100,28 +82,28 @@ def _build() -> int:
     cmd.ensure_finalized()
     if cmd.compiler is None:
         cmd.compiler = "unix"
-    # inplace build_ext resolves the output path from the extension name
-    # ("slimtoken.pipeline" → ./slimtoken/pipeline.so), ignoring the src/
-    # layout. Pre-create that dir so the build succeeds; the .so is relocated
-    # into src/slimtoken/ after compile.
+
+
+
+
     (REPO / "slimtoken").mkdir(parents=True, exist_ok=True)
     cmd.run()
     import shutil
     for m in stale:
         stem = m.replace(".py", "")
         name = _so_for(SRC / m).name
-        # inplace build_ext places the .so at the package path implied by the
-        # extension name — repo-root `slimtoken/` for a src-layout. Relocate
-        # into the real package dir so the editable install finds it.
+
+
+
         misplaced = REPO / "slimtoken" / name
         target = SRC / name
         if misplaced.exists() and misplaced != target:
             shutil.move(str(misplaced), str(target))
-        # The .c intermediates are build-only — remove after successful compile.
+
         (SRC / m).with_suffix(".c").unlink(missing_ok=True)
         print(f"  compiled {m} → {name}")
-    # setuptools leaves build/temp*.o (with absolute source paths baked in) —
-    # remove the whole build tree so no artifacts survive.
+
+
     shutil.rmtree(REPO / "build", ignore_errors=True)
     return 0
 

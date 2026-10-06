@@ -55,8 +55,8 @@ def presets_by_tier() -> Dict[int, List[Dict]]:
 
 
 
-_VERBOSE_SYS = ("<cold_memory>\nYou are a senior engineer. Follow conventions.\n"
-                "Never leak personal info.\n</cold_memory>\n\n\n\n"
+_VERBOSE_SYS = ("<cold_memory>\nLocal conventions index. Entries are appended.\n"
+                "Paths resolve through the environment layer.\n</cold_memory>\n\n\n\n"
                 "Be concise. Use tables when comparing.\n")
 
 
@@ -136,14 +136,7 @@ class Compressor:
 
 
 def _session_sources(count: int) -> list:
-    """`count` blocks of real source, one per turn.
 
-    Real files, not a synthetic 'line N: detail here' body: every reducer in
-    tool_result_compress.py inspects the text for the shape of what it is
-    compressing, and placeholder text matches none of them, so a fabricated
-    fixture measures the reducers' *rejection* path and reports ~0% for a
-    pipeline that in fact removes most of a real file read.
-    """
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
     out = []
@@ -160,14 +153,7 @@ def _session_sources(count: int) -> list:
 
 
 def _payload_session() -> dict:
-    """An agent session: eight turns, a DIFFERENT real file read on each.
 
-    Distinct bodies on purpose. The `bloated` fixture reads the same file every
-    turn, so it measures dedup and nothing else; a real session reads different
-    files. Under the default `code` mode every one of those distinct reads is
-    preserved, so this fixture reports 0% — that is the honest shape of the
-    default, not a failure of a stage.
-    """
     srcs = _session_sources(8)
     msgs = []
     for i in range(8):
@@ -193,15 +179,7 @@ def _payload_session() -> dict:
 
 
 def _payload_voice() -> dict:
-    """A spoken conversation: no tools, no code, no file reads.
 
-    This is the shape SLIMTOKEN_MODE=realtime exists for and the shape the code
-    mode is NOT measured on, so without it any claim about the realtime mode
-    would be a claim about the wrong body. Turns are deliberately ordinary
-    speech — the elision a lossy mode buys you is proportional to how much
-    prose a turn carries, so a fixture of one-line utterances would understate
-    it and a fixture of essays would flatter it.
-    """
     turns = [
         ("hey can you walk me through what happened with that eviction thing "
          "again, i keep losing track of which deadline actually matters and "
@@ -236,13 +214,7 @@ _PAYLOADS = {"typical": _payload_typical, "bloated": _payload_bloated,
 
 
 def measure_reduction(size: str = "bloated", mode: Optional[str] = None) -> Dict:
-    """Reduction for one payload, optionally measured AS a named mode.
 
-    `mode` sets SLIMTOKEN_MODE for the duration of the call rather than calling
-    build_config with an argument, because the env var is how the proxy and the
-    unit files actually select a mode — measuring any other path would measure
-    something the owner cannot reproduce.
-    """
     import copy
     if size not in _PAYLOADS:
         size = "bloated"
@@ -253,8 +225,8 @@ def measure_reduction(size: str = "bloated", mode: Optional[str] = None) -> Dict
         body = _PAYLOADS[size]()
         cfg = build_config()
         from .profiles import current_mode
-        # read the mode while the env var is still in place — after the finally
-        # below it is back to whatever the caller had
+
+
         mode_name = current_mode()
         tin = count_obj(body)
         out, stats = minify_request(copy.deepcopy(body), cfg)

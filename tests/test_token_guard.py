@@ -1,12 +1,4 @@
-"""Regression tests for the 2026-09-21 death-spiral fixes.
 
-Bug 1: tiktoken raised on special tokens (e.g. GLM emitting the cl100k
-endoftext special) in request history -> proxy killed the connection ->
-client timeout retry loop.
-Bug 2: one module-level OutputFilter shared across concurrent requests ->
-cross-stream state corruption.
-Requirement: special-token strings are BLOCKED from responses entirely.
-"""
 
 import json
 
@@ -15,11 +7,11 @@ import pytest
 from slimtoken import tokencount
 from slimtoken.output_filter import OutputFilter, _block_special_tokens, from_env
 
-# built from parts so this source file never contains the raw special token
+
 SPECIAL = "<|" + "endof" + "text" + "|>"
 
 
-# ---------- Bug 1: tokenizer must never raise on special tokens ----------
+
 
 def test_count_with_special_token_does_not_raise():
     n = tokencount.count(f"hello {SPECIAL} world")
@@ -31,7 +23,7 @@ def test_count_bytes_with_special_token_does_not_raise():
     assert n > 0
 
 
-# ---------- Blocking: special-token strings never reach the client ----------
+
 
 def test_block_special_tokens_rewrites_angle_form():
     out = _block_special_tokens(f"thinking done {SPECIAL} answer")
@@ -42,7 +34,7 @@ def test_block_special_tokens_rewrites_angle_form():
 
 def test_block_special_tokens_bare_known_specials():
     out = _block_special_tokens("a endofprompt b")
-    assert out == "a [endofprompt] b"  # angle-free, tokenizer-safe
+    assert out == "a [endofprompt] b"
 
 
 def test_block_leaves_normal_text_alone():
@@ -56,15 +48,15 @@ def _sse_frame(delta_text: str) -> bytes:
 
 
 def test_output_filter_blocks_special_token_in_stream():
-    f = OutputFilter()  # defaults: block on, nothing else
+    f = OutputFilter()
     out = f.feed(_sse_frame(f"part one {SPECIAL} part two")) + f.finish()
     assert SPECIAL not in out.decode("utf-8", "replace")
     assert b"part one" in out
 
 
 def test_output_filter_split_across_frames_is_caught():
-    # token string split across two SSE frames — the holdback must rejoin it
-    # and rewrite it; the COMPLETE special token must never appear in output
+
+
     f = OutputFilter()
     half = len(SPECIAL) // 2
     out = (f.feed(_sse_frame("xx" + SPECIAL[:half]))
@@ -75,7 +67,7 @@ def test_output_filter_split_across_frames_is_caught():
     assert "[endoftext]" in stream
 
 
-# ---------- Bug 2: per-request filter instances are independent ----------
+
 
 def test_filters_are_independent_instances(monkeypatch):
     monkeypatch.setenv("SLIMTOKEN_STOP", "STOP")
@@ -95,4 +87,4 @@ def test_block_env_disable(monkeypatch):
     monkeypatch.delenv("SLIMTOKEN_STOP", raising=False)
     f = from_env()
     raw = f.feed(_sse_frame(f"raw {SPECIAL} passthrough")) + f.finish()
-    assert SPECIAL in raw.decode()  # disabled -> verbatim passthrough
+    assert SPECIAL in raw.decode()

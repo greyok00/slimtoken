@@ -10,16 +10,16 @@ from typing import List, Optional
 
 
 
-# Token-guard: strip strings that a downstream tokenizer treats as special
-# tokens. GLM (and friends) emit these literally in model output; once one
-# lands in a client's conversation history it poisons every later request
-# (tiktoken raises ValueError -> proxy kills the connection -> timeout loop).
-# We rewrite them to a bracketed plain-text form BEFORE they reach the client.
+
+
+
+
+
 _SPECIAL_TOKEN_RE = re.compile(r"<\|([a-zA-Z0-9_.\-]{1,48})\|>")
 _SPECIAL_TOKEN_NAME_RE = re.compile(r"^<\|([a-zA-Z0-9_.\-]{1,48})\|>$")
 
-# Known cl100k specials, matched exactly even without <||> delimiters
-# (defense in depth — some models emit them bare).
+
+
 _KNOWN_SPECIALS = (
     "endoftext", "endofprompt", "fim_prefix", "fim_middle", "fim_suffix",
 )
@@ -27,7 +27,7 @@ _KNOWN_SPECIALS = (
 
 def _block_special_tokens(text: str) -> str:
     if "<|" not in text:
-        # still check bare known specials (cheap: short strings only)
+
         for sp in _KNOWN_SPECIALS:
             if sp in text:
                 return re.sub(
@@ -39,8 +39,8 @@ def _block_special_tokens(text: str) -> str:
     return _SPECIAL_TOKEN_RE.sub(_sub, text)
 
 
-# A trailing "<|endo" style fragment could be the start of a special token
-# completed in the NEXT streamed delta — hold it back until then.
+
+
 _PARTIAL_TOKEN_RE = re.compile(r"<\|[a-zA-Z0-9_.\-]{0,48}\|?$")
 
 
@@ -116,8 +116,8 @@ class OutputFilter:
         self._stop_window = max((len(s) for s in self.stops), default=0) if self.stops else 0
         self._filler_buf = ""
         self._filler_done = False
-        self._block_carry = ""      # held-back partial "<|..."" fragment
-        self._pending_out = None    # one-frame delay so carry can be re-injected
+        self._block_carry = ""
+        self._pending_out = None
 
 
     def feed(self, chunk: bytes) -> bytes:
@@ -135,15 +135,15 @@ class OutputFilter:
                 break
             frame = self._buf[:idx]
             self._buf = self._buf[idx + 2:]
-            # flush the previously-held frame, now that we know whether the
-            # held-back "<|..." partial completed into a token in this frame
+
+
             if self._pending_out is not None:
                 out += self._inject_carry(self._pending_out, self._block_carry)
                 self._pending_out = None
             frame_out = self._process_frame(frame) + b"\n\n"
             if self._closed:
-                # stream truncated (stop/max_tokens): emit this frame with its
-                # own held-back tail, then stop
+
+
                 out += self._inject_carry(frame_out, self._block_carry)
                 self._pending_out = None
                 self._block_carry = ""
@@ -175,7 +175,7 @@ class OutputFilter:
         return bytes(out)
 
     def _inject_carry(self, frame: bytes, carry: str) -> bytes:
-        """Prepend held-back text into a frame's text delta (SSE-safe)."""
+
         if not carry:
             return frame
         text = frame.decode("utf-8", errors="replace")
@@ -252,8 +252,8 @@ class OutputFilter:
         refs = self._text_refs(obj)
         if not refs:
             return frame
-        # prepend any partial-token text held back from the previous frame
-        # (applied to the first text ref only; SSE deltas carry one text field)
+
+
         if self.block and self._block_carry:
             container, key = refs[0]
             container[key] = self._block_carry + (container[key] or "")
@@ -373,8 +373,8 @@ class OutputFilter:
 
 
 def from_env() -> Optional["OutputFilter"]:
-    # Token-guard is ALWAYS on (SLIMTOKEN_BLOCK_TOKENS=0 to disable): a special
-    # token string escaping into client history wedges every future request.
+
+
     mt = _env_max_tokens()
     stops = _env_stops()
     filler = _env_filler()

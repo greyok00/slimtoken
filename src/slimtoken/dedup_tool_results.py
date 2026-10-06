@@ -63,10 +63,10 @@ def dedup_tool_results(messages: List[Dict], stats: Dict, min_chars: int = DEFAU
             occurrences.append((mi, bi, _content_key(rc), rc, n))
 
 
-    # Kept in step with pipeline.optimize_messages (the live path): keep the LAST
-    # copy verbatim and stub earlier ones, ordered by (mi, bi) rather than by
-    # message, so duplicates among PARALLEL tool calls in a single turn — which
-    # land in one canonical message — are collapsed too.
+
+
+
+
     last_occ: Dict[str, tuple] = {}
     for mi, bi, key, _rc, _n in occurrences:
         last_occ[key] = (mi, bi)

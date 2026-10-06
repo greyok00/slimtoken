@@ -1,4 +1,3 @@
-# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -6,26 +5,20 @@ build/
 dist/
 .eggs/
 
-# Cython build artifacts (generated from .py — do not commit)
 src/slimtoken/*.so
 src/slimtoken/*.c
 *.so
 *.c
 
-# editable install artifacts
 *.egg-link
 
-# state / runtime (installer writes these)
 ~/.slimtoken/
 *.log
 
-# benchmark snapshots (keep results.json, ignore transient)
 bench/*.tmp
 
-# venv
 .venv/
 venv/
 
-# IDE
 .vscode/
 .idea/

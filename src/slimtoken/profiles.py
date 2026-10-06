@@ -27,46 +27,46 @@ def _env_tool_skip() -> Set[str]:
     return {s.strip() for s in raw.split(",") if s.strip()}
 
 
-# ── Modes ────────────────────────────────────────────────────────────────────
-# 2026-09-27 (owner): "we need our version to be Code/verbose mode but still be
-# 'slimtoken' if that makes sense, then a full lossy fast as fucking possible
-# mode for realtime comms."
-#
-# A mode is a set of STARTING VALUES, not a lock: any SLIMTOKEN_* variable set
-# in the environment overrides the mode for that one knob, so a caller can run
-# `code` and turn a single stage up without restating the rest.
-#
-# MODE_CODE (default) — for an agent that reads files, edits them and calls
-#   tools. Three things are removed, and the newest turns are never one of them:
-#     * a tool result byte-identical to an earlier one — the duplicate is
-#       stubbed and the LAST copy stays verbatim (dedup);
-#     * prose in assistant turns more than `keep_last` messages old — fenced
-#       blocks survive that verbatim (distill_old_turns.py:52).
-#   It does NOT touch tool results at all: no result, old or new, is ever
-#   rewritten (tool_compress is OFF here as of 2026-10-03). Before that it
-#   shortened the middle of an old result and marked the gap, which meant the
-#   mode's promise — newest turns byte-for-byte — held while an older read the
-#   model might still return to did not.
-#   So: the evidence you fetched reaches the model unaltered, whoever fetched it
-#   and whenever. What this mode still shortens is OLD ASSISTANT PROSE, and it
-#   marks every elision when it does.
-#   The `tools` stage is deliberately OFF here: it rewrites tool schemas
-#   (strips `title`/`examples`/`$comment`), which changes how a model fills in
-#   arguments, so a tool-calling agent must opt into it, not inherit it.
-#
-# MODE_REALTIME — for TALKING to a model, not for working with one. No code, no
-#   file reads, no tool contracts; the goal is the shortest prompt that still
-#   reads as the conversation. User turns are elided as well as assistant turns
-#   (`distill_include_user`) and prose is cut to `distill_max_chars` characters;
-#   every old tool result is skeletonised (`keep_last=2`, not 4).
-#   Do NOT run an agent session in this mode. An elided instruction still reads
-#   as a complete instruction and a stubbed file read still reads as an empty
-#   file, so the model acts confidently on evidence that is no longer there.
-#   Measured, not assumed: on an 8-turn agent session (8 distinct real file
-#   reads) code mode leaves the newest read byte-identical and the realtime mode
-#   does NOT — `keep_last=2` is not enough to cover a read the model is still
-#   waiting on, and a skeletonised read is what made the model re-run its own
-#   tool call on 2026-09-27 01:34.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 _MODE_CODE = "code"
 _MODE_REALTIME = "realtime"
 
@@ -77,13 +77,13 @@ MODES: Dict[str, Dict] = {
         "keep_last": 4,
         "distill_max_chars": 4096,
         "distill_include_user": False,
-        # 2026-10-03 (owner): "prevent the mangling." This was True, so `code`
-        # mode shortened the middle of OLD tool results and stamped
-        # "[slimtoken-compressed] N B -> M B" over the gap. The agent lane only
-        # escaped it via a SLIMTOKEN_TOOL_COMPRESS=0 pin in the unit file, which
-        # means the default and the mode's own promise ("lossless where it
-        # matters") disagreed. Default OFF; a lane that wants it sets
-        # SLIMTOKEN_TOOL_COMPRESS=1 explicitly, same as any other knob.
+
+
+
+
+
+
+
         "tool_compress": False,
         "minify_dom": False,
         "dedup_min_chars": 200,
@@ -104,8 +104,8 @@ MODES: Dict[str, Dict] = {
 
 DEFAULT_MODE = _MODE_CODE
 
-# Why each mode is worth having, in the words the CLI prints. These are reasons,
-# not marketing: the realtime entry says what it costs you.
+
+
 MODE_NOTES: Dict[str, str] = {
     _MODE_CODE:
         "default. No tool result is ever rewritten, old or new — the file you "
@@ -127,9 +127,7 @@ def mode_note(name: str) -> str:
 
 
 def current_mode() -> str:
-    """SLIMTOKEN_MODE, validated. An unknown name falls back to `code` — the
-    safe direction — and says so once, because a typo that silently selects the
-    lossy mode is the failure this whole layer exists to prevent."""
+
     raw = os.environ.get("SLIMTOKEN_MODE", DEFAULT_MODE).strip().lower()
     if raw in MODES:
         return raw

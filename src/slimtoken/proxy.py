@@ -136,10 +136,10 @@ def _build_out_filter():
 
 
 
-# NOTE: one OutputFilter instance PER REQUEST (built inside _handle), never a
-# module-level singleton. A filter carries per-stream state (_buf, _closed,
-# _emitted_tokens); sharing it let concurrent sessions corrupt each other's
-# SSE frames, and one stream closing the filter silenced every other response.
+
+
+
+
 
 
 
@@ -228,8 +228,8 @@ def _minify_body(body: bytes, fmt: str = "anthropic") -> bytes:
             if fmt != "anthropic":
                 parsed = adapters.from_canonical(parsed, fmt)
         except Exception as e:
-            # Optimize stages must NEVER kill a request: on any failure,
-            # forward the parsed body untouched instead.
+
+
             print(f"[proxy] minify failed (passthrough): {e}", file=sys.stderr)
         return jdumps(parsed)
     return body
@@ -380,7 +380,7 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
 
 
 
-                out_filter = _build_out_filter()  # fresh per-request state
+                out_filter = _build_out_filter()
                 async for chunk in resp.aiter_bytes():
                     if not chunk:
                         continue

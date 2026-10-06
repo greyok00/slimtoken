@@ -210,10 +210,10 @@ def test_distill():
             if isinstance(m.get("content"), str) and "great detail" in m["content"]:
                 intact += 1
         else:
-            # the marker is "[slimtoken: N chars elided]" — this asserted the
-            # word "distilled", which distill_old_turns.py has never emitted, so
-            # the check reported distilled=0 while the stage was firing on all
-            # eight old turns. Assert the marker that exists.
+
+
+
+
             if isinstance(m.get("content"), str) and "chars elided" in m["content"]:
                 distilled += 1
     check("distill compresses old turns", distilled >= 5, f"distilled={distilled}")
@@ -370,11 +370,11 @@ def test_proxy_e2e():
         time.sleep(0.3)
         got = json.loads(received["body"])
         check("proxy strips grammar", "grammar" not in got)
-        # The default mode is `code`, and `code` leaves the system prompt alone:
-        # it is where the owner's own standing rules live, and the `system`
-        # stage deletes phrases out of it ("I think", "Actually", "Basically")
-        # in addition to blank lines. So the default must NOT touch it, and the
-        # blank-line collapse is checked below with the stage explicitly on.
+
+
+
+
+
         check("proxy default leaves the system prompt alone",
               got["system"] == payload["system"], f'system={got["system"]!r}')
         check("proxy preserves memory tag", "<cold_memory>" in got["system"])
@@ -567,12 +567,12 @@ def test_tool_result_compress():
 
     check("tool_result content rewritten", new[1]["content"][0]["content"] != msgs[1]["content"][0]["content"])
 
-    # 2026-09-27: keep_last must protect the newest turns. Without it the stage
-    # skeletonised the result of the tool the model had JUST called — a 400-line
-    # read came back as head 5 + "375 lines omitted" + tail 5 — so the model
-    # could not see the evidence it asked for and re-ran the call. That is the
-    # request loop observed on 2026-09-27 01:34. Compressing OLD results is the
-    # useful half; this pins that split so it cannot silently regress.
+
+
+
+
+
+
     new, n = compress_messages(copy.deepcopy(msgs), keep_last=2)
     check("keep_last compresses only older results", n == 1)
     check("keep_last leaves newest result verbatim", new[3]["content"][0]["content"] == ls)
@@ -586,12 +586,12 @@ def test_output_filter():
 
     f = OutputFilter(max_tokens=None, stops=[], filler=False)
     raw = b"event: x\ndata: {\"delta\":{\"text\":\"hello\"}}\n\n"
-    # feed() holds the last complete frame in _pending_out on purpose (see
-    # output_filter.py:152 — it has to see the NEXT frame before it can decide
-    # whether a trailing "<|..." was a partial token). So a passthrough check
-    # that calls feed() alone always reads empty. Assert the real contract:
-    # nothing is corrupted, and finish() — which the proxy does call at stream
-    # end, proxy.py:401 — releases it.
+
+
+
+
+
+
     out = f.feed(raw) + f.finish()
     check("raw passthrough all levers off", out == raw, f"out={out!r}")
 
@@ -901,10 +901,10 @@ def test_distill_user_preserved():
 
 
     body2 = {"system": "s", "messages": msgs}
-    # distill_max_chars stated explicitly: MinifyConfig's own default is 4096
-    # (distill_old_turns.DEFAULT_MAX_CHARS), and this fixture's turns are only
-    # 3,620 chars, so relying on the default measured "does nothing" and
-    # reported it as "the opt-in does not work".
+
+
+
+
     nb2, _ = minify_request(copy.deepcopy(body2), MinifyConfig(keep_last=4,
                                                                distill_max_chars=160,
                                                                distill_include_user=True))
@@ -1049,15 +1049,7 @@ def test_uninstall_no_duplicate():
 
 
 def test_modes():
-    """The mode layer: what each mode selects, and what it does to real bodies.
 
-    Two claims are pinned behaviourally, because they are the two that a future
-    edit is most likely to quietly break: the default mode must leave the NEWEST
-    tool result byte-identical (that is the loop guard), and it must be a no-op
-    on a spoken conversation (that is the reason the lossy mode exists at all —
-    if the default ever starts compressing conversation, this test says so
-    instead of letting the realtime mode look redundant).
-    """
     import contextlib
     import io
     from slimtoken import profiles
@@ -1102,14 +1094,14 @@ def test_modes():
         check("realtime elides aggressively", cfg.distill_max_chars == 160)
         check("realtime keeps 2 messages, not 4", cfg.keep_last == 2)
 
-    # an explicit knob still beats the mode — that is how the unit file pins one
-    # stage without restating the whole mode
+
+
     with env(SLIMTOKEN_MODE="code", SLIMTOKEN_MINIFY_TOOLS="1", SLIMTOKEN_KEEP_LAST="9"):
         cfg = profiles.build_config()
         check("env overrides the mode's stage set", "tools" in cfg.enabled_stages)
         check("env overrides the mode's keep_last", cfg.keep_last == 9)
 
-    # a typo must fail toward the safe mode, never toward the lossy one
+
     buf = io.StringIO()
     with env(SLIMTOKEN_MODE="realitme"):
         with contextlib.redirect_stderr(buf):
@@ -1122,7 +1114,7 @@ def test_modes():
         cfg = profiles.build_config()
         check("master off still beats the mode", not cfg.enabled_stages and not cfg.tool_compress)
 
-    # ── behaviour, not just the switchboard ──
+
     session = _PAYLOADS["session"]()
 
     def newest_result(body):
@@ -1158,18 +1150,18 @@ def test_modes():
               newest_result(out) == newest_result(session))
         check("code mode leaves the last user turn verbatim",
               out["messages"][-1] == session["messages"][-1])
-        # Eight DISTINCT reads, no duplicates, and one-line assistant turns.
-        # Every lossless lever is now off by construction, so the honest result
-        # is that this body comes out UNCHANGED. That is not a regression: it is
-        # what "no result is ever rewritten" means on a body with nothing
-        # duplicated and no long prose to elide. The mode still earns its keep
-        # on repeated reads, which is the next block.
+
+
+
+
+
+
         check("code mode is byte-identical on all-distinct reads", out == session,
               f"pct={pct:.1f}")
         check("code mode never grows the body", pct >= 0.0, f"pct={pct:.1f}")
 
-    # the compressor is not removed, it is just no longer the mode's default —
-    # a lane that wants old tool results shortened still asks for it by name
+
+
     with env(SLIMTOKEN_MODE="code", SLIMTOKEN_TOOL_COMPRESS="1"):
         out, st = minify_request(copy.deepcopy(session), profiles.build_config())
         check("explicit tool_compress still shortens old file reads",
@@ -1177,9 +1169,9 @@ def test_modes():
         check("explicit tool_compress still leaves the newest read verbatim",
               newest_result(out) == newest_result(session))
 
-    # where the lossless levers DO bite: the same file read every turn is a
-    # duplicate, and dedup stubs the older copies while the last one stays
-    # verbatim — nothing a model read is rewritten
+
+
+
     repeated = _PAYLOADS["bloated"]()
     with env(SLIMTOKEN_MODE="code"):
         out, st = minify_request(copy.deepcopy(repeated), profiles.build_config())
@@ -1196,10 +1188,10 @@ def test_modes():
         check("realtime DOES shorten the newest read — why it is not for agents",
               newest_result(out) != newest_result(session))
 
-    # the system prompt is where the owner's own standing rules live, so the
-    # default must hand it over byte-identical — and the `system` stage must
-    # still collapse blanks when it is deliberately turned on, or turning it off
-    # by default would have quietly retired the feature
+
+
+
+
     sys_body = {"system": "Rules.\n\n\n\n\nMore rules. I think this matters.",
                 "messages": [{"role": "user", "content": "hi"}]}
     with env(SLIMTOKEN_MODE="code"):

@@ -30,13 +30,13 @@ def _truncate_prose(seg: str, budget: int) -> str:
 
 def distill_text(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
 
-    # 2026-09-23 loss-preserving rewrite (owner: "FIXED not disabled"): the
-    # old version dropped every code fence after the first and hard-chopped
-    # prose with no marker — that destroyed code and context in old turns
-    # and contributed to agent loops. Now: EVERY code fence is kept
-    # verbatim, prose keeps head AND tail with an explicit elision marker
-    # naming the drop count, so a model reading a distilled turn knows
-    # exactly what was elided and can still see the conclusion.
+
+
+
+
+
+
+
     if not isinstance(text, str) or len(text) <= _MIN_DISTILL_LEN:
         return text
     segs = split_fences(text)
@@ -49,7 +49,7 @@ def distill_text(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
     prose_budget = max_chars
     for is_fence, seg in segs:
         if is_fence:
-            # ALL fences preserved verbatim — code is never touched
+
             kept.append(seg)
             continue
         if not seg.strip():
