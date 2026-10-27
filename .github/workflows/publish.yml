@@ -17,8 +17,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release download -R "${{ github.repository }}" -p "slimtoken-*.whl"
-          mv slimtoken-*.whl pkg-slimtoken.whl
+          gh release download -R "${{ github.repository }}" -p "slimtoken-*.whl" --dir .
       - name: Build and push image
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
