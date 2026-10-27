@@ -1,8 +1,9 @@
-# release workflow: wheel sits at the build context root as pkg-slimtoken.whl
+# release workflow: the release wheel arrives at the context root as pkg-slimtoken.whl
 FROM python:3.13-slim
 RUN pip install --no-cache-dir --root-user-action=ignore tiktoken orjson httpx xxhash
-WORKDIR /wheel
-COPY slimtoken-*.whl /wheel/
-RUN pip install --no-cache-dir --root-user-action=ignore /wheel/slimtoken-*.whl && rm -rf /wheel
+COPY pkg-slimtoken.whl /tmp/pkg-slimtoken.whl
+RUN cp /tmp/pkg-slimtoken.whl /tmp/slimtoken-0.7.1-cp313-cp313-manylinux_2_41_x86_64.whl \
+    && pip install --no-cache-dir --root-user-action=ignore /tmp/slimtoken-0.7.1-*.whl \
+    && rm -f /tmp/pkg-slimtoken.whl /tmp/slimtoken-*.whl
 ENTRYPOINT ["slimtoken"]
 CMD ["--help"]
