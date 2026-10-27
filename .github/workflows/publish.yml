@@ -1,0 +1,29 @@
+name: publish
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  packages: write
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download wheel from latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download -R "${{ github.repository }}" -p "slimtoken-*.whl"
+          mv slimtoken-*.whl pkg-slimtoken.whl
+      - name: Build and push image
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker build -f .github/Dockerfile.build \
+            -t "ghcr.io/${{ github.repository }}:latest" \
+            -t "ghcr.io/${{ github.repository }}:${GITHUB_REF_NAME#v}" .
+          docker push "ghcr.io/${{ github.repository }}:latest"
+          docker push "ghcr.io/${{ github.repository }}:${GITHUB_REF_NAME#v}"

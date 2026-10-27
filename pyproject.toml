@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "slimtoken"
+version = "0.7.1"
+description = "A standalone token-optimization + memory layer for LLM requests: minifies tools, system prompts, and message history, dedups tool results, distills old turns, and prunes to a token budget. Runs as an async proxy for Anthropic / OpenAI / Ollama, an MCP server, a CLI, or a plain Python import."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{name = "greyok00"}]
+keywords = ["llm", "anthropic", "openai", "ollama", "proxy", "minify", "context", "llama-server", "async", "mcp", "memory", "agent", "persistence"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "httpx>=0.27",
+    "orjson>=3.9",
+    "xxhash>=3.0",
+    "tiktoken>=0.7",
+]
+
+[project.optional-dependencies]
+uvloop = ["uvloop>=0.19"]
+mcp = ["mcp>=1.0"]
+dev = ["pytest>=7.0", "mypy>=1.0"]
+
+[project.urls]
+Homepage = "https://github.com/greyok00/slimtoken"
+Repository = "https://github.com/greyok00/slimtoken"
+Issues = "https://github.com/greyok00/slimtoken/issues"
+
+[project.scripts]
+slimtoken = "slimtoken.cli:main"
+slimtoken-serve = "slimtoken.proxy:main"
+slimtoken-mcp = "slimtoken.mcp_server.server:main"
+slimtoken-reframe-mcp = "slimtoken.mcp_server.prompt_reframe_server:main"
+
+[tool.setuptools.package-data]
+slimtoken = ["data/*.tiktoken", "*.so", "*/*.so", "*/*/*.so", "*/*/*/*.so"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "-q"
+markers = [
+    "unit: pure-function tests, no ports, no subprocesses",
+    "integration: spawns local proxies on fixed ports (run individually, 9210/9211 sequential-only)",
+]
