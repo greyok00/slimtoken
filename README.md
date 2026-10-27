@@ -12,6 +12,18 @@ network service beyond your chosen model backend is contacted.
 
 ![SlimToken CLI](docs/images/slimtoken-cli.png)
 
+## Quick start
+
+```bash
+git clone https://github.com/greyok00/slimtoken
+cd slimtoken
+./scripts/install.sh   # pip install -e . + slimtoken install
+slimtoken serve        # proxy on port 8181; point your client at it
+```
+
+Details, including installing from a release wheel instead of a clone, are
+under [Install](#install).
+
 ## What it does
 
 1. A client points at the slimtoken proxy instead of the model backend
@@ -108,8 +120,9 @@ dedup pass alone removes ~73% of tokens when the same output is read twice
 
 ## Install
 
-Requirements: Python 3.10+ with a matching CPython (the wheel is built for
-CPython 3.13 x86_64 Linux), ~50 MB disk. No compiled backend is required —
+Requirements: Python 3.10+ on Linux, ~50 MB disk. The prebuilt wheel's compiled
+modules target CPython 3.13 x86_64; on other interpreters, install from a clone
+(`install.sh` builds them inline). No compiled backend is required —
 the proxy works against Anthropic/OpenAI/Ollama-compatible HTTP endpoints.
 
 Default backend is whatever you point at (`SLIMTOKEN_UPSTREAM`, default
