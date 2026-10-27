@@ -120,9 +120,10 @@ dedup pass alone removes ~73% of tokens when the same output is read twice
 
 ## Install
 
-Requirements: Python 3.10+ on Linux, ~50 MB disk. The prebuilt wheel's compiled
-modules target CPython 3.13 x86_64; on other interpreters, install from a clone
-(`install.sh` builds them inline). No compiled backend is required —
+Requirements: CPython 3.13 on Linux (x86_64), ~50 MB disk. The published wheel's
+compiled modules are Cython-built for that exact interpreter/platform combination —
+there is no source fallback, so other Python versions and platforms are not
+supported. No compiled backend is required at runtime —
 the proxy works against Anthropic/OpenAI/Ollama-compatible HTTP endpoints.
 
 Default backend is whatever you point at (`SLIMTOKEN_UPSTREAM`, default

@@ -7,16 +7,14 @@ name = "slimtoken"
 version = "0.7.1"
 description = "A standalone token-optimization + memory layer for LLM requests: minifies tools, system prompts, and message history, dedups tool results, distills old turns, and prunes to a token budget. Runs as an async proxy for Anthropic / OpenAI / Ollama, an MCP server, a CLI, or a plain Python import."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.13"
 license = "MIT"
 authors = [{name = "greyok00"}]
 keywords = ["llm", "anthropic", "openai", "ollama", "proxy", "minify", "context", "llama-server", "async", "mcp", "memory", "agent", "persistence"]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: POSIX :: Linux",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
