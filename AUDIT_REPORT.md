@@ -95,16 +95,20 @@ protection. Recorded upstream-work-list item; not repaired (compiled module, rep
 would mean wrapping CLI behavior in a shim, which was judged out of proportion for P3).
 
 ## Source-repair constraint (recorded honestly)
-The audit brief asks for source-level repair where authoritative source exists. It does
-**not** exist for the compiled stages: release commit history contains no earlier `.py`
-versions (checked git history, `~/tmp/slimtoken-mockup`, `~/tmp/so-build`, vendor copies),
-and the local build script (`~/tmp/cxbuild_slimtoken.py`) *deleted* the `.py` sources after
-compiling. Per the operating rules, no decompilation is presented as source. Repairs were
-therefore implemented as thin, well-tested `.py` shims registered by
-`src/slimtoken/__init__.py` — `artifacts` (full behavioral repair) and `pipeline`
-(single-stage policy repair, everything else delegated). This path is complete and testable;
-long-term, restoring the `.py` sources upstream is the real remedy (BLOCKED: sources
-unavailable).
+The compiled stages shipped with no `.py`/`.pyx` sources anywhere in the release
+history — the local build script (`~/tmp/cxbuild_slimtoken.py`) *deleted* the
+sources after compiling. A later recovery pass found a **partial source snapshot**
+inside the vendored agent copies (`~/greyagent/vendor/slimtoken/dist/slimtoken-0.7.1.tar.gz`
+sdist: 52 `.py` modules) plus the same modules as `.pyc` — but the snapshot
+**drifts from the shipped 0.7.1 binaries** (its output filter activates by default,
+its distill/compress stages fail code-protection tests, and the `artifacts` module
+is absent entirely), so rebuilding all 48 modules from it would regress
+verified behavior. Verdict: the shipped `.so` modules stay; the fix modules were
+decommented, minified, and **Cython-compiled into the release** (see
+`scripts/decomment.py`; the wheel-build CI step does the same), and their
+readable `.py` sources stay committed so the source-deletion mistake is not
+repeated. The recovered snapshot remains at the vendor path for any future
+attempt to reconstruct drifted modules.
 
 ## Verification summary
 | Item | Status |
