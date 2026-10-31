@@ -1,0 +1,57 @@
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install package + test deps
+        run: pip install -e '.[dev]' pytest mcp httpx
+      - name: Run test suite
+        run: pytest tests/ -v
+  wheel:
+    runs-on: ubuntu-latest
+    needs: suite
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build wheel
+        run: |
+          pip install build
+          python -m build --wheel -o dist .
+      - name: Retag wheel to the real binary platform
+        run: python scripts/retag_wheel.py dist/slimtoken-*.whl
+      - name: Wheel must be platform-tagged, never py3-none-any
+        run: |
+          tag=$(ls dist/*.whl | sed 's/.*-\([a-z0-9_-]*\)\.whl/\1/')
+          if [ "$tag" = "py3-none-any" ]; then echo "FAIL: binary wheel shipped untagged"; exit 1; fi
+          echo "wheel tag: $tag"
+      - name: Install from wheel and smoke-test OUTSIDE the checkout
+        run: |
+          pip install dist/slimtoken-*.whl
+          cd "$RUNNER_TEMP"
+          python -c "import slimtoken; print(slimtoken.__version__)"
+          slimtoken modes
+          slimtoken optimize --help
+          slimtoken recall --help
+      - name: sdist exists and matches
+        run: |
+          pip install build
+          python -m build --sdist -o dist .
+          ls -la dist

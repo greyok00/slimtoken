@@ -157,12 +157,17 @@ def _extract_digest(marker_text):
 
 
 def test_dedup_stub_carries_retrievable_digest(tmp_path, monkeypatch):
+    # 0.7.2: append-only dedup. The LATER copy becomes the stub and the FIRST
+    # copy stays byte-exact, so exact-prefix prompt caches never see earlier
+    # messages rewritten. The dropped copy must still be recallable verbatim.
     monkeypatch.setenv("SLIMTOKEN_ARTIFACT_DIR", str(tmp_path / "arts"))
     from slimtoken.pipeline import minify_request
     body = json.loads(json.dumps(_dup_body()))
     nb, stats = minify_request(body, _dedup_cfg())
-    stub = nb["messages"][0]["content"][0]["content"]
-    assert isinstance(stub, str) and "recall" in stub
+    first = nb["messages"][0]["content"][0]["content"]
+    assert first == "X" * 400
+    stub = nb["messages"][2]["content"][0]["content"]
+    assert isinstance(stub, str) and "recall" in stub and "digest" in stub
     digest = _extract_digest(stub)
     assert digest, stub
     from slimtoken import artifacts

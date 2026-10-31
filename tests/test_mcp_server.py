@@ -338,11 +338,14 @@ def test_optimize_openai_format():
         check("openai keeps both tool results", len(tool_contents) == 2)
         newest = tool_contents[-1]
         older = tool_contents[0]
-        check("openai newest tool result intact", newest == big)
-        older_txt = json.dumps(older, ensure_ascii=False) if isinstance(older, list) else older
-        check("openai older duplicate stubbed with recall marker",
-              "slimtoken recall" in older_txt, f"stub: {str(older_txt)[:120]}")
-        m = re.search(r"digest ([0-9a-f]{64})", str(older_txt))
+        # 0.7.2 append-only dedup: the FIRST copy stays byte-exact; the later
+        # copy becomes a digest stub that recalls the original.
+        check("openai first tool result intact", older == big)
+        check("openai later tool result stubbed with digest",
+              isinstance(newest, str) and "digest" in newest and "recall" in newest
+              and "an earlier tool_result" in newest)
+        check("openai stub carries recall marker", "slimtoken recall" in newest)
+        m = re.search(r"digest ([0-9a-f]{64})", newest)
         from slimtoken import artifacts
         check("openai dedup digest retrievable",
               bool(m) and artifacts.get(m.group(1)) == big)

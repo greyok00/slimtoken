@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "slimtoken"
-version = "0.7.1"
+version = "0.7.2"
 description = "A standalone token-optimization + memory layer for LLM requests: minifies tools, system prompts, and message history, dedups tool results, distills old turns, and prunes to a token budget. Runs as an async proxy for Anthropic / OpenAI / Ollama, an MCP server, a CLI, or a plain Python import."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -38,6 +38,7 @@ Issues = "https://github.com/greyok00/slimtoken/issues"
 slimtoken = "slimtoken.cli:main"
 slimtoken-serve = "slimtoken.proxy:main"
 slimtoken-mcp = "slimtoken.mcp_server.server:main"
+slimtoken-memory-mcp = "slimtoken.memory.mcp_server:main"
 slimtoken-reframe-mcp = "slimtoken.mcp_server.prompt_reframe_server:main"
 
 [tool.setuptools.package-data]
