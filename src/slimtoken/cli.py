@@ -1,0 +1,422 @@
+"""Command-line interface for slimtoken.
+
+Holds one handler per subcommand: proxy serving, shell integration,
+preset listings, and offline optimization of a saved request body.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+MARKER_BEGIN = "# >>> slimtoken >>>"
+MARKER_END = "# <<< slimtoken <<<"
+DEFAULT_URL = "http://127.0.0.1:8181"
+STATE_DIR = Path(os.environ.get("SLIMTOKEN_STATE_DIR", str(Path.home() / ".slimtoken")))
+PREV_ENV = STATE_DIR / "prev_env"
+
+def _detect_rc(explicit: str | None) -> Path:
+    if explicit:
+        return Path(explicit).expanduser()
+    shell = os.environ.get("SHELL", "")
+    if "zsh" in shell:
+        return Path.home() / ".zshrc"
+    return Path.home() / ".bashrc"
+
+def _read_block(rc: Path):
+    if not rc.exists():
+        return "", None, ""
+    text = rc.read_text()
+    i = text.find(MARKER_BEGIN)
+    if i < 0:
+        return text, None, ""
+    j = text.find(MARKER_END, i)
+    if j < 0:
+        return text, None, ""
+    before = text[:i]
+    block = text[i + len(MARKER_BEGIN):j]
+    after = text[j + len(MARKER_END):]
+
+    url_line = None
+    for ln in block.splitlines():
+        if "ANTHROPIC_BASE_URL=" in ln:
+            url_line = ln.strip()
+            break
+    return before, url_line, after
+
+def cmd_install(args):
+    """Point ANTHROPIC_BASE_URL at the proxy in a shell rc file, backing up any prior value."""
+    rc = _detect_rc(args.rc)
+    url = args.url
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    before, existing_url_line, after = _read_block(rc)
+
+    prior = None
+    if existing_url_line is None:
+        for ln in before.splitlines() + after.splitlines():
+            if "ANTHROPIC_BASE_URL=" in ln and MARKER_BEGIN not in ln:
+                try:
+                    prior = ln.split("=", 1)[1].strip().strip("'\"")
+                except Exception:
+                    prior = None
+                break
+    if prior and not PREV_ENV.exists():
+        PREV_ENV.write_text(prior)
+    block = f"\n{MARKER_BEGIN}\nexport ANTHROPIC_BASE_URL={url}\n{MARKER_END}\n"
+    if existing_url_line is not None:
+        text = rc.read_text()
+        import re
+        text = re.sub(
+            r"(" + MARKER_BEGIN + r".*?ANTHROPIC_BASE_URL=).*?(\n.*?" + MARKER_END + r")",
+            r"\g<1>" + url + r"\g<2>", text, flags=re.DOTALL)
+        rc.write_text(text)
+    else:
+        rc.write_text(before.rstrip("\n") + "\n" + block + after.lstrip("\n"))
+    print(f"installed: ANTHROPIC_BASE_URL={url}")
+    print(f"  written to {rc}")
+    print(f"  prior value backed up to {PREV_ENV}" if prior and not PREV_ENV.exists()
+          else ("  (no prior ANTHROPIC_BASE_URL to back up)" if not prior
+                else f"  (prior backup already at {PREV_ENV})"))
+    print(f"restart your shell (or `source {rc}`), then run `slimtoken serve`.")
+
+def cmd_uninstall(args):
+    """Remove the slimtoken block from the shell rc file and restore the prior base URL."""
+    rc = _detect_rc(args.rc)
+    if not rc.exists():
+        print("nothing to uninstall (no rc file)")
+        return 0
+    text = rc.read_text()
+    i = text.find(MARKER_BEGIN)
+    j = text.find(MARKER_END, i) if i >= 0 else -1
+    if i < 0 or j < 0:
+        print("no slimtoken marker block found — already clean")
+    else:
+        import re
+        text = re.sub(re.escape(MARKER_BEGIN) + r".*?" + re.escape(MARKER_END) + r"\n?",
+                      "", text, flags=re.DOTALL)
+        rc.write_text(text)
+        print(f"removed slimtoken block from {rc}")
+
+    if PREV_ENV.exists():
+        prior = PREV_ENV.read_text().strip()
+        has_unmarked = any(
+            "ANTHROPIC_BASE_URL=" in ln and MARKER_BEGIN not in ln and MARKER_END not in ln
+            for ln in text.splitlines())
+        if prior and has_unmarked:
+            print("existing ANTHROPIC_BASE_URL left in place (no duplicate written)")
+        elif prior:
+            with open(rc, "a") as f:
+                f.write(f"\nexport ANTHROPIC_BASE_URL={prior}\n")
+            print(f"restored prior ANTHROPIC_BASE_URL={prior}")
+        else:
+            print("ANTHROPIC_BASE_URL now unset (clients fall back to their default).")
+        PREV_ENV.unlink()
+    else:
+        print("ANTHROPIC_BASE_URL now unset (Claude Code uses its default).")
+    print("pip uninstall slimtoken to remove the package.")
+    return 0
+
+def cmd_serve(args):
+    """Translate serve options into environment variables and start the proxy."""
+    if args.port:
+        os.environ["SLIMTOKEN_PORT"] = str(args.port)
+    if args.upstream:
+        os.environ["SLIMTOKEN_UPSTREAM"] = args.upstream
+    if args.tool_compress:
+        os.environ["SLIMTOKEN_TOOL_COMPRESS"] = "1"
+    if args.max_tokens is not None:
+        os.environ["SLIMTOKEN_MAX_TOKENS"] = str(args.max_tokens)
+    if args.stop:
+        os.environ["SLIMTOKEN_STOP"] = args.stop
+    if args.http2:
+        os.environ["SLIMTOKEN_HTTP2"] = "1"
+    from . import proxy
+    proxy.main()
+
+def cmd_latency(args):
+    """Send one request through a running proxy and print its latency breakdown."""
+    import json as _json
+    import socket
+    import time
+    port = int(args.port or os.environ.get("SLIMTOKEN_PORT", "8181"))
+    body = _json.dumps({"model": "t",
+                        "system": "<cold_memory>\n\n\nkeep\n</cold_memory>\n\n\nMore.",
+                        "messages": [{"role": "user", "content": "ping"}]}).encode()
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    s.settimeout(10)
+    t0 = time.perf_counter()
+    s.sendall(f"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Length: {len(body)}\r\n\r\n".encode() + body)
+    resp = b""
+    try:
+        while True:
+            d = s.recv(65536)
+            if not d: break
+            resp += d
+    except socket.timeout:
+        pass
+    s.close()
+    t4 = time.perf_counter()
+
+    import urllib.request
+    try:
+        m = _json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=2).read())
+        L = m.get("latency", {})
+        print("latency breakdown (seconds, last sample):")
+        print(f"  t0->t1 ingress   : {L.get('proxy_ingress', 0):.4f}  (read request)")
+        print(f"  t1->t2 optimize   : {L.get('optimize', 0):.4f}  (parse + minify)")
+        print(f"  t2->t3 ttft       : {L.get('ttft', 0):.4f}  (forward -> first token)")
+        print(f"  t3->t4 generation : {L.get('generation', 0):.4f}  (first -> final token)")
+        print(f"  t0->t4 total      : {L.get('total', 0):.4f}")
+        print(f"  samples           : {L.get('samples', 0)}")
+        print(f"  tokens            : {m.get('prompt_tokens', 0)} in -> {m.get('completion_tokens', 0)} out")
+    except Exception as e:
+        print(f"could not read /metrics: {e}", file=sys.stderr)
+    print(f"client-side wall time: {t4 - t0:.4f}s")
+    return 0
+
+def cmd_config_optimizer(args):
+    """Print recommended llama-server arguments for the detected GPU and model."""
+    from . import config_optimizer as co
+    try:
+        vram = float(args.vram_gb) if args.vram_gb else None
+        rec = co.recommend(
+            vram_gb=vram, model_path=args.model,
+            model_size_gb=float(args.model_size_gb) if args.model_size_gb else None,
+            kv_per_token_bytes=int(args.kv_per_token),
+            native_ctx=int(args.native_ctx))
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        print("usage: slimtoken config-optimizer --model PATH | --model-size-gb N "
+              "[--vram-gb N] [--kv-per-token B] [--native-ctx N]", file=sys.stderr)
+        return 2
+    print(co.format_report(rec))
+
+def cmd_lazy_mcp(args):
+    """Run the lazy MCP stub server, or its smoke self-test."""
+    from . import lazy_mcp
+    if args.smoke == "smoke":
+        return lazy_mcp.smoke()
+    if not args.name:
+        print("usage: slimtoken lazy-mcp --name SERVER_NAME  (or: slimtoken lazy-mcp smoke)",
+              file=sys.stderr)
+        return 2
+    lazy_mcp.run_server(args.name)
+
+def cmd_optimize(args):
+    """Minify a request body from a file or stdin and print the result."""
+    import json as _json
+    import copy
+    if args.input and args.input != "-":
+        raw = Path(args.input).read_text()
+    else:
+        raw = sys.stdin.read()
+    body = _json.loads(raw)
+    fmt = args.format
+    from .profiles import build_config
+    from .pipeline import minify_request
+    from .tokencount import count_obj
+    from . import adapters
+    if fmt != "anthropic":
+        body = adapters.to_canonical(body, fmt)
+    cfg = build_config()
+    if args.max_input_tokens is not None:
+        cfg.token_budget = int(args.max_input_tokens)
+    tin = count_obj(body)
+    out, stats = minify_request(copy.deepcopy(body), cfg)
+    tout = count_obj(out)
+    if fmt != "anthropic":
+        out = adapters.from_canonical(out, fmt)
+    if args.json:
+        print(_json.dumps(out, ensure_ascii=False, default=str))
+    else:
+        print(_json.dumps(out.get("messages", body.get("messages")), ensure_ascii=False, default=str))
+        if "system" in out:
+            print("system:", _json.dumps(out["system"], ensure_ascii=False, default=str))
+        if "tools" in out:
+            print("tools:", _json.dumps(out["tools"], ensure_ascii=False, default=str))
+    print(f"tokens: {tin} -> {tout}  (-{round(100*(tin-tout)/tin,1) if tin else 0}%)",
+          file=sys.stderr)
+    print(f"stages: tools={stats.tools_minified} system={stats.system_minified} "
+          f"msgs={stats.messages_minified} dedup={stats.dedup_count} "
+          f"distill={stats.distill_count} budget_drop={stats.budget_dropped} "
+          f"tool_compressed={stats.tool_compressed}", file=sys.stderr)
+    return 0
+
+def cmd_recall(args):
+    """Print the exact original content stored for an artifact digest.
+
+    Exits 1 when the digest is unknown (or the artifact fails validation) so
+    callers can distinguish an empty recall from a successful one.
+    """
+    from . import artifacts
+    content = artifacts.recall(args.digest)
+    if content is None:
+        print(f"unknown digest {args.digest}", file=sys.stderr)
+        return 1
+    print(content)
+    return 0
+
+def cmd_modes(args):
+    """Print the optimization modes and what each one saves."""
+    from .profiles import MODES, DEFAULT_MODE, current_mode, mode_note
+    from . import model_presets as mp
+    me = current_mode()
+    print(f"modes (SLIMTOKEN_MODE=<name>; current: {me}"
+          f"{' — default' if me == DEFAULT_MODE else ''})\n")
+    for name in sorted(MODES):
+        m = MODES[name]
+        mark = "*" if name == DEFAULT_MODE else " "
+        print(f"{mark} {name}")
+        print(f"    stages            : {', '.join(sorted(m['stages'])) or '(none)'}"
+              f"{', +tool_compress' if m['tool_compress'] else ''}")
+        print(f"    keep_last         : {m['keep_last']} messages passed through untouched")
+        print(f"    distill_max_chars : {m['distill_max_chars']}"
+              f"{', user turns elided too' if m['distill_include_user'] else ''}")
+        print(f"    {mode_note(name)}")
+        print()
+    if args.measure:
+        print("measured reduction (same pipeline the proxy runs, on built-in "
+              "fixtures):")
+        print(f"  {'payload':10} {'mode':9} {'in':>8} {'out':>8} {'saved':>7}")
+        for size in ("session", "bloated", "voice"):
+            for name in sorted(MODES):
+                r = mp.measure_reduction(size, mode=name)
+                print(f"  {size:10} {name:9} {r['tokens_in']:>8} {r['tokens_out']:>8} "
+                      f"{r['reduction_pct']:>6}%")
+        print("\n  session = an 8-turn agent session, a distinct real file read per turn")
+        print("  bloated = 8 turns, the same large file read every time (dedup territory)")
+        print("  voice   = a spoken conversation: no tools, no code, no file reads")
+        print("  A mode that reads well on one payload can do nothing on another —")
+        print("  the default mode saves nothing on `voice`, which is why the lossy")
+        print("  mode exists at all.")
+    return 0
+
+def cmd_presets(args):
+    """List local-model presets grouped by GPU VRAM tier."""
+    from . import model_presets as mp
+    m = mp.measure_reduction("bloated") if args.measure else None
+    rows = mp.list_presets(args.vram_gb)
+    if not rows:
+        print("no presets match.", file=sys.stderr)
+        return 1
+    print(f"{'VRAM':>4}  {'model':38} {'quant':8} {'ctx':>7}")
+    for r in rows:
+        print(f"{r['vram_gb']:>4}GB {r['model'][:38]:38} {r['quant'][:8]:8} "
+              f"{r['context']:>7}   {r['notes']}")
+    if m:
+        print(f"\npipeline reduction on a sample bloated payload: "
+              f"{m['reduction_pct']}% ({m['tokens_in']:,} -> {m['tokens_out']:,} tokens)")
+        print("one number for the whole pipeline — the proxy shrinks requests the")
+        print("same way no matter which model serves them, so it is not per-model.")
+    return 0
+
+def cmd_high_context(args):
+    """List high-context VRAM-tier presets with pipeline-adjusted effective context."""
+    from . import context_presets as cp
+    rows = cp.list_context_presets(args.vram_gb)
+    if not rows:
+        print("no presets match.", file=sys.stderr)
+        return 1
+    print(f"{'tier':>4} {'kind':5} {'model':18} {'quant':7} {'nominal':>8} {'totalGB':>7} "
+          f"{'margin':>6} {'red%':>5} {'effective':>10}  notes")
+    for r in rows:
+        print(f"{r['vram_gb']:>4}GB {r['kind']:5} {r['model'][:18]:18} {r['quant'][:7]:7} "
+              f"{r['nominal_ctx']:>8} {r['total_gb']:>7.2f} {r['margin_gb']:>+6.2f} "
+              f"{r['reduction_pct']:>5.1f} {r['effective_ctx']:>10,}  "
+              f"{r['notes'][:38]}")
+    m = cp.measure_reduction("bloated")
+    print(f"\nred% = pipeline reduction measured once on a sample bloated payload "
+          f"({m['reduction_pct']}%, {m['tokens_in']:,} -> {m['tokens_out']:,} tokens), "
+          f"not per-model — the proxy shrinks every request the same way.")
+    print("effective = nominal ctx / (1 - red%/100): the context a real bloated "
+          "session needs, once compressed.")
+    if args.detail:
+        print("\n# llama-server commands (replace the -m path with your .gguf):")
+        for r in rows:
+            print(f"# {r['vram_gb']}GB {r['kind']} {r['model']} ({r['quant']}, {r['kv_quant']} KV)")
+            print(r['llama_cmd'].replace("-m  ", "-m <model.gguf> ", 1))
+    return 0
+
+def main(argv=None):
+    """Build the argument parser and dispatch to the selected subcommand."""
+    ap = argparse.ArgumentParser(prog="slimtoken",
+                                 description="token-optimization layer for LLM requests")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("serve", help="run the optimization proxy")
+    s.add_argument("--port", type=int, default=None)
+    s.add_argument("--upstream", type=str, default=None,
+                   help="upstream URL (http://127.0.0.1:8080 or https://api.anthropic.com)")
+    s.add_argument("--tool-compress", action="store_true", default=None,
+                   help="enable lossy type-specific tool-result compression (SLIMTOKEN_TOOL_COMPRESS=1)")
+    s.add_argument("--max-tokens", type=int, default=None,
+                   help="enforce a max output-token cap on streamed responses (SLIMTOKEN_MAX_TOKENS)")
+    s.add_argument("--stop", type=str, default=None,
+                   help="comma-joined stop sequences to truncate the streamed response (SLIMTOKEN_STOP)")
+    s.add_argument("--http2", action="store_true", default=None,
+                   help="use HTTP/2 to the upstream (SLIMTOKEN_HTTP2=1; off by default)")
+    s.set_defaults(func=cmd_serve)
+
+    c = sub.add_parser("config-optimizer", help="recommend llama-server args for a GPU+model")
+    c.add_argument("--vram-gb", type=float, default=None, help="GPU VRAM (auto-detect if omitted)")
+    c.add_argument("--model", type=str, default=None, help="path to .gguf")
+    c.add_argument("--model-size-gb", type=float, default=None, help="model size in GB (if no path)")
+    c.add_argument("--kv-per-token", type=int, default=5120, help="KV bytes/token (hybrid MoE~5120, dense~8192)")
+    c.add_argument("--native-ctx", type=int, default=262144, help="model's max ctx")
+    c.set_defaults(func=cmd_config_optimizer)
+
+    i = sub.add_parser("install", help="point ANTHROPIC_BASE_URL at the proxy")
+    i.add_argument("--url", type=str, default=DEFAULT_URL)
+    i.add_argument("--rc", type=str, default=None, help="shell rc file (auto-detect)")
+    i.set_defaults(func=cmd_install)
+
+    u = sub.add_parser("uninstall", help="restore prior ANTHROPIC_BASE_URL + remove block")
+    u.add_argument("--rc", type=str, default=None)
+    u.set_defaults(func=cmd_uninstall)
+
+    l = sub.add_parser("lazy-mcp", help="run a lazy MCP stub server (one tool per MCP server)")
+    l.add_argument("--name", type=str, default=os.environ.get("SLIMTOKEN_LAZY_MCP_NAME", ""),
+                   help="MCP server name (from ~/.slimtoken/lazy_mcp.json)")
+    l.add_argument("smoke", nargs="?", default=None, help="run 'smoke' to self-test")
+    l.set_defaults(func=cmd_lazy_mcp)
+
+    lt = sub.add_parser("latency", help="send one request through a running proxy and print t0-t4")
+    lt.add_argument("--port", type=int, default=None)
+    lt.set_defaults(func=cmd_latency)
+
+    o = sub.add_parser("optimize", help="minify a request JSON body (file or stdin)")
+    o.add_argument("--input", "-i", default=None, help="input JSON file (default: stdin)")
+    o.add_argument("--format", "-f", default="anthropic",
+                   choices=["anthropic", "openai", "ollama"],
+                   help="request body format (anthropic /v1/messages, "
+                        "openai /v1/chat/completions, ollama /api/chat)")
+    o.add_argument("--max-input-tokens", type=int, default=None, help="override the token_budget")
+    o.add_argument("--json", action="store_true", help="emit the full minified body as one JSON object")
+    o.set_defaults(func=cmd_optimize)
+
+    pr = sub.add_parser("presets", help="list local-model presets by GPU VRAM tier")
+    pr.add_argument("--vram-gb", type=int, default=None, help="filter to one tier (4/8/16)")
+    pr.add_argument("--measure", action="store_true", help="run the pipeline to measure real reduction")
+    pr.set_defaults(func=cmd_presets)
+
+    mo = sub.add_parser("modes", help="list the code/realtime modes and what each saves")
+    mo.add_argument("--measure", action="store_true",
+                    help="run the pipeline per mode and print real reduction")
+    mo.set_defaults(func=cmd_modes)
+
+    hc = sub.add_parser("high-context", help="list high-context VRAM-tier presets (dense + MoE)")
+    hc.add_argument("--vram-gb", type=int, default=None, help="filter to one tier (4/8/16)")
+    hc.add_argument("--detail", action="store_true", help="also print the llama-server commands")
+    hc.set_defaults(func=cmd_high_context)
+
+    rc = sub.add_parser("recall", help="print the exact original content for an artifact digest")
+    rc.add_argument("digest", help="sha256 digest from an elision/compression marker")
+    rc.set_defaults(func=cmd_recall)
+
+    args = ap.parse_args(argv)
+    return args.func(args) or 0
+
+if __name__ == "__main__":
+    sys.exit(main())
