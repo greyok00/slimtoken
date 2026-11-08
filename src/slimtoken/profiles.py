@@ -63,8 +63,8 @@ MODE_NOTES: Dict[str, str] = {
         "in an old assistant turn. Tool schemas are left exactly as written.",
     _MODE_REALTIME:
         "lossy, for STT/TTS conversation where nothing is being built. Elides "
-        "user turns too, cuts prose to 160 chars/turn, and shortens even the "
-        "newest tool result. Do not use it for agent work — elided text still "
+        "user turns too and cuts prose to 160 chars/turn. Do not use it for "
+        "agent work — elided text still "
         "reads as complete, so the model answers confidently from evidence it "
         "no longer has.",
 }

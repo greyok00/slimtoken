@@ -64,6 +64,9 @@ def _metrics_json() -> str:
     m = {**m, "latency": dict(m["latency"])}
     return json.dumps(m, indent=2)
 
+# 2026-11-08 owner: the stats path is read from env at _record_minify() time,
+# so `slimtoken serve` started by a systemd unit (env set there) still emits
+# the ledger even if this module was imported before the env was visible.
 _MINIFY_STATS_FILE = os.environ.get("SLIMTOKEN_STATS_FILE") or None
 _minify_stats = {
     "runs": 0, "tokens_in": 0, "tokens_out": 0, "tokens_saved": 0,
@@ -73,6 +76,11 @@ _minify_stats = {
 _MINIFY_HIST_CAP = 60
 
 def _record_minify(stats) -> None:
+    global _MINIFY_STATS_FILE
+    # late env read: unit files / launchers set SLIMTOKEN_STATS_FILE in their
+    # own Environment=, which may land after this module was first imported.
+    if not _MINIFY_STATS_FILE:
+        _MINIFY_STATS_FILE = os.environ.get("SLIMTOKEN_STATS_FILE") or None
     if not _MINIFY_STATS_FILE:
         return
     try:
