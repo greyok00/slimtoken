@@ -269,12 +269,17 @@ def test_dom_prune_keyed_by_content_not_shared(tmp_path, monkeypatch):
         {"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": "t2", "content": h2}]},
     ]}
-    cfg = MinifyConfig(enabled_stages=set(), minify_dom=True, token_budget=0)
+    # 2026-11-08 owner order: the DOM *pipeline stage* is source-removed.
+    # The keyed-cache behavior of dom_pruner itself is still covered directly:
+    from slimtoken.dom_pruner import prune_dom
+    pa = prune_dom(h1, "sess-exactness-a")
+    pb = prune_dom(h2, "sess-exactness-b")
+    assert "alpha" in pa and "beta" in pb
+    assert pa != pb
+    cfg = MinifyConfig(enabled_stages=set(), token_budget=0)
     nb, stats = minify_request(copy.deepcopy(body), cfg)
-    a = nb["messages"][0]["content"][0]["content"]
-    b = nb["messages"][2]["content"][0]["content"]
-    assert "alpha" in a and "beta" in b
-    assert a != b
+    assert nb["messages"][0]["content"][0]["content"] == h1  # untouched
+    assert nb["messages"][2]["content"][0]["content"] == h2  # untouched
     clear_dom_cache()
 
 def test_dom_cap_stores_collapsed_text(tmp_path, monkeypatch):

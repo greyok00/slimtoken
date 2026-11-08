@@ -1,4 +1,5 @@
 """End-to-end tests across the main pipeline stages, adapters, and the CLI."""
+import dataclasses  # noqa: F401 — used by source-removal guard tests (owner 2026-11-08)
 
 
 import json
@@ -609,8 +610,12 @@ def test_output_filter_filler():
     os.environ.pop("SLIMTOKEN_FILLER", None)
 
 def test_dom_stage():
+    # 2026-11-08 owner order: the DOM *pruner function* still works standalone
+    # (used by lane tooling), but the pipeline stage is source-removed —
+    # MinifyConfig no longer carries minify_dom and minify_request never prunes.
     from slimtoken.dom_pruner import prune_dom, clear_dom_cache
     from slimtoken.pipeline import MinifyConfig, minify_request
+    import dataclasses
 
     h = ('<html><head><script>alert(1)</script></head>'
          '<body><nav>menu</nav><div class="x" id="y" data-z="w">hi</div>'
@@ -624,22 +629,20 @@ def test_dom_stage():
     big_html = "<html><body>" + "<div>row</div>" * 2000 + "</body></html>"
     body = {"messages": [{"role": "user", "content": [
         {"type": "tool_result", "tool_use_id": "t1", "content": big_html}]}]}
-    cfg_off = MinifyConfig(minify_dom=False)
-    nb, stats = minify_request(copy.deepcopy(body), cfg_off)
-    check("dom stage off by default", stats.dom_minified == 0)
-    cfg_on = MinifyConfig(minify_dom=True)
-    nb, stats = minify_request(copy.deepcopy(body), cfg_on)
-    check("dom stage fires when enabled", stats.dom_minified == 1)
-    check("dom stage pruned content", len(nb["messages"][0]["content"][0]["content"]) < len(big_html))
+    check("MinifyConfig no longer has minify_dom (owner 2026-11-08)",
+          "minify_dom" not in {f.name for f in dataclasses.fields(MinifyConfig)})
+    nb, stats = minify_request(copy.deepcopy(body), MinifyConfig())
+    check("html tool result untouched by pipeline",
+          nb["messages"][0]["content"][0]["content"] == big_html)
 
     check("dom preserves tool_use_id", nb["messages"][0]["content"][0]["tool_use_id"] == "t1")
     check("dom preserves message count", len(nb["messages"]) == 1)
 
     body2 = {"messages": [{"role": "user", "content": [
         {"type": "tool_result", "tool_use_id": "t2", "content": "short text"}]}]}
-    nb2, stats2 = minify_request(copy.deepcopy(body2), cfg_on)
-    check("dom skips small results", stats2.dom_minified == 0)
-    check("dom skips small content", nb2["messages"][0]["content"][0]["content"] == "short text")
+    nb2, stats2 = minify_request(copy.deepcopy(body2), MinifyConfig())
+    check("small tool result untouched (stage gone)",
+          nb2["messages"][0]["content"][0]["content"] == "short text")
 
     clear_dom_cache()
 
@@ -967,8 +970,8 @@ def test_modes():
         check("code mode guards the newest turns", cfg.keep_last == 4, f"keep_last={cfg.keep_last}")
         check("code mode leaves user turns alone", cfg.distill_include_user is False)
         check("code mode does not elide short prose", cfg.distill_max_chars == 4096)
-        check("code mode never rewrites tool results", cfg.tool_compress is False,
-              f"tool_compress={cfg.tool_compress}")
+        check("code mode never rewrites tool results", "tool_compress" not in {f.name for f in dataclasses.fields(profiles.MinifyConfig)},
+              f"tool_compress removed from MinifyConfig (owner 2026-11-08)")
 
     with env(SLIMTOKEN_MODE="realtime"):
         cfg = profiles.build_config()
@@ -994,7 +997,7 @@ def test_modes():
 
     with env(SLIMTOKEN_MODE="realtime", SLIMTOKEN_MINIFY="0"):
         cfg = profiles.build_config()
-        check("master off still beats the mode", not cfg.enabled_stages and not cfg.tool_compress)
+        check("master off still beats the mode", not cfg.enabled_stages)
 
     session = _PAYLOADS["session"]()
 
@@ -1023,7 +1026,7 @@ def test_modes():
         pct = 100 * (tin - tout) / tin
         print(f"  agent session under code mode: {tin} -> {tout} tok ({pct:.1f}%)")
         check("code mode compresses no tool result at all", st.tool_compressed == 0,
-              f"compressed={st.tool_compressed}")
+              f"compressed={st.tool_compressed}")  # counter kept at 0 post-removal
         check("code mode leaves every read byte-identical",
               all_results(out) == all_results(session),
               f"{len(all_results(out))} results")
@@ -1036,12 +1039,16 @@ def test_modes():
               f"pct={pct:.1f}")
         check("code mode never grows the body", pct >= 0.0, f"pct={pct:.1f}")
 
+    # 2026-11-08 owner order: tool_compress is REMOVED at source (profiles.build_config
+    # hard-False). The old "explicit opt-in still works" contract is dead on purpose;
+    # replaced by a guard test that it can NEVER come back.
     with env(SLIMTOKEN_MODE="code", SLIMTOKEN_TOOL_COMPRESS="1"):
-        out, st = minify_request(copy.deepcopy(session), profiles.build_config())
-        check("explicit tool_compress still shortens old file reads",
-              st.tool_compressed >= 1, f"compressed={st.tool_compressed}")
-        check("explicit tool_compress still leaves the newest read verbatim",
-              newest_result(out) == newest_result(session))
+        cfg = profiles.build_config()
+        check("tool_compress cannot be re-enabled by env (owner 2026-11-08)",
+              not hasattr(cfg, "tool_compress"), "cfg still exposes tool_compress")
+        out, st = minify_request(copy.deepcopy(session), cfg)
+        check("tool results stay byte-verbatim when env asks for compress",
+              out["messages"] == session["messages"], "tool results were rewritten!")
 
     repeated = _PAYLOADS["bloated"]()
     with env(SLIMTOKEN_MODE="code"):
@@ -1056,8 +1063,10 @@ def test_modes():
 
     with env(SLIMTOKEN_MODE="realtime"):
         out, st = minify_request(copy.deepcopy(session), profiles.build_config())
-        check("realtime DOES shorten the newest read — why it is not for agents",
-              newest_result(out) != newest_result(session))
+        # 2026-11-08 owner order: result-rewriting is source-removed; realtime
+        # mode now elides prose but can no longer shorten tool results either.
+        check("realtime can no longer shorten the newest read (owner 2026-11-08)",
+              newest_result(out) == newest_result(session))
 
     sys_body = {"system": "Rules.\n\n\n\n\nMore rules. I think this matters.",
                 "messages": [{"role": "user", "content": "hi"}]}

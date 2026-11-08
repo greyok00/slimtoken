@@ -37,10 +37,6 @@ class MinifyConfig:
 
     distill_include_user: bool = False
 
-    tool_compress: bool = False
-
-    minify_dom: bool = False
-
 @dataclass
 class MinifyStats:
     """Counters describing what the pipeline changed."""
@@ -54,7 +50,7 @@ class MinifyStats:
     budget_dropped: int = 0
     budget_tokens_before: int = 0
     budget_tokens_after: int = 0
-    tool_compressed: int = 0
+    tool_compressed: int = 0  # REMOVED-stage counter, kept at 0 for stat-file schema compat (owner 2026-11-08)
     dom_minified: int = 0
     errors: list = field(default_factory=list)
 
@@ -265,11 +261,8 @@ def minify_request(body: dict, cfg: MinifyConfig) -> tuple:
         except Exception as e:
             stats.errors.append(f"messages:{e}")
 
-    if cfg.minify_dom and "messages" in nb:
-        try:
-            nb["messages"] = _maybe_prune_dom_in_messages(nb.get("messages"), stats)
-        except Exception as e:
-            stats.errors.append(f"dom:{e}")
+    # DOM pipeline branch removed (owner 2026-11-08): the stage and its config
+    # field no longer exist; dom_pruner.prune_dom remains for standalone use.
 
     if cfg.token_budget > 0 and "messages" in nb:
         try:
@@ -277,15 +270,8 @@ def minify_request(body: dict, cfg: MinifyConfig) -> tuple:
         except Exception as e:
             stats.errors.append(f"budget:{e}")
 
-    if cfg.tool_compress and "messages" in nb:
-        try:
-            from .tool_result_compress import compress_messages
-
-            nb["messages"], n = compress_messages(nb.get("messages"), keep_last=cfg.keep_last)
-            if n and stats is not None:
-                stats.tool_compressed = n
-        except Exception as e:
-            stats.errors.append(f"tool_compress:{e}")
+    # tool_compress removed at source (owner 2026-11-08): no branch, no import.
+    # cfg.tool_compress / cfg.minify_dom no longer exist on MinifyConfig.
 
     stats.tokens_out = count_obj(nb) if nb else 0
     return nb, stats

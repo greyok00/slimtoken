@@ -118,14 +118,59 @@ def cmd_uninstall(args):
     print("pip uninstall slimtoken to remove the package.")
     return 0
 
+def cmd_savings(args):
+    """Print the hard savings facts from a running proxy's stats ledger.
+
+    Reads the JSON written by SLIMTOKEN_STATS_FILE (the proxy records every
+    minified request: tokens in/out, saved, ratio, per-window history) and
+    reports totals, the session mean, and the recent trend. No measurement,
+    no claim — only what the ledger recorded."""
+    import json as _json
+    path = args.stats or os.environ.get("SLIMTOKEN_STATS_FILE")
+    if not path:
+        print("no stats file: pass --stats PATH or set SLIMTOKEN_STATS_FILE", file=sys.stderr)
+        return 1
+    try:
+        with open(path) as fh:
+            d = _json.load(fh)
+    except FileNotFoundError:
+        print(f"stats file not found yet: {path} (the proxy creates it on first minified request)", file=sys.stderr)
+        return 1
+    except _json.JSONDecodeError as e:
+        print(f"stats file unreadable ({path}): {e}", file=sys.stderr)
+        return 1
+    runs = d.get("runs", 0)
+    tin, tout = d.get("tokens_in", 0), d.get("tokens_out", 0)
+    saved = d.get("tokens_saved", tin - tout)
+    ratio = d.get("ratio_pct")
+    if ratio is None and tin:
+        ratio = round(100 * saved / tin, 1)
+    hist = d.get("history_60s") or []
+    out = {"stats_file": path, "runs": runs, "tokens_in": tin,
+           "tokens_out": tout, "tokens_saved": saved,
+           "saved_pct": ratio, "last_saved_pct": d.get("last_saved_pct"),
+           "last_run": d.get("last_run_ts"), "history_60s": hist}
+    if args.json:
+        print(_json.dumps(out, indent=1))
+        return 0
+    print(f"slimtoken savings — {path}")
+    print(f"  minified requests : {runs}")
+    print(f"  tokens in         : {tin:,}")
+    print(f"  tokens out        : {tout:,}")
+    print(f"  tokens saved      : {saved:,}  ({ratio}% mean)")
+    if hist:
+        recent = ", ".join(f"{h.get('saved_pct', 0)}%" for h in hist[-5:])
+        print(f"  recent (last ≤60s): {recent}")
+    if d.get("last_run_ts"):
+        print(f"  last request      : {d['last_run_ts']}")
+    return 0
+
 def cmd_serve(args):
     """Translate serve options into environment variables and start the proxy."""
     if args.port:
         os.environ["SLIMTOKEN_PORT"] = str(args.port)
     if args.upstream:
         os.environ["SLIMTOKEN_UPSTREAM"] = args.upstream
-    if args.tool_compress:
-        os.environ["SLIMTOKEN_TOOL_COMPRESS"] = "1"
     if args.max_tokens is not None:
         os.environ["SLIMTOKEN_MAX_TOKENS"] = str(args.max_tokens)
     if args.stop:
@@ -133,7 +178,10 @@ def cmd_serve(args):
     if args.http2:
         os.environ["SLIMTOKEN_HTTP2"] = "1"
     from . import proxy
-    proxy.main()
+    # Empty argv: proxy's argparse re-reads sys.argv if left unset, and that
+    # still contains the `serve` subcommand (+ flags like --http2) it does not
+    # know. Config already passed via the env vars above.
+    proxy.main([])
 
 def cmd_latency(args):
     """Send one request through a running proxy and print its latency breakdown."""
@@ -240,8 +288,7 @@ def cmd_optimize(args):
           file=sys.stderr)
     print(f"stages: tools={stats.tools_minified} system={stats.system_minified} "
           f"msgs={stats.messages_minified} dedup={stats.dedup_count} "
-          f"distill={stats.distill_count} budget_drop={stats.budget_dropped} "
-          f"tool_compressed={stats.tool_compressed}", file=sys.stderr)
+          f"distill={stats.distill_count} budget_drop={stats.budget_dropped}", file=sys.stderr)
     return 0
 
 def cmd_recall(args):
@@ -269,8 +316,7 @@ def cmd_modes(args):
         m = MODES[name]
         mark = "*" if name == DEFAULT_MODE else " "
         print(f"{mark} {name}")
-        print(f"    stages            : {', '.join(sorted(m['stages'])) or '(none)'}"
-              f"{', +tool_compress' if m['tool_compress'] else ''}")
+        print(f"    stages            : {', '.join(sorted(m['stages'])) or '(none)'}")
         print(f"    keep_last         : {m['keep_last']} messages passed through untouched")
         print(f"    distill_max_chars : {m['distill_max_chars']}"
               f"{', user turns elided too' if m['distill_include_user'] else ''}")
@@ -345,18 +391,21 @@ def main(argv=None):
                                  description="token-optimization layer for LLM requests")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
+    sv = sub.add_parser("savings", help="hard savings facts from a running proxy's stats ledger (SLIMTOKEN_STATS_FILE or --stats)")
+    sv.add_argument("--stats", type=str, default=None,
+                    help="path to a slimtoken stats JSON (default: $SLIMTOKEN_STATS_FILE)")
+    sv.add_argument("--json", action="store_true", help="machine-readable output")
     s = sub.add_parser("serve", help="run the optimization proxy")
     s.add_argument("--port", type=int, default=None)
     s.add_argument("--upstream", type=str, default=None,
                    help="upstream URL (http://127.0.0.1:8080 or https://api.anthropic.com)")
-    s.add_argument("--tool-compress", action="store_true", default=None,
-                   help="enable lossy type-specific tool-result compression (SLIMTOKEN_TOOL_COMPRESS=1)")
     s.add_argument("--max-tokens", type=int, default=None,
                    help="enforce a max output-token cap on streamed responses (SLIMTOKEN_MAX_TOKENS)")
     s.add_argument("--stop", type=str, default=None,
                    help="comma-joined stop sequences to truncate the streamed response (SLIMTOKEN_STOP)")
     s.add_argument("--http2", action="store_true", default=None,
                    help="use HTTP/2 to the upstream (SLIMTOKEN_HTTP2=1; off by default)")
+    sv.set_defaults(func=cmd_savings)
     s.set_defaults(func=cmd_serve)
 
     c = sub.add_parser("config-optimizer", help="recommend llama-server args for a GPU+model")

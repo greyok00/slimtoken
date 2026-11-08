@@ -49,11 +49,11 @@ _FILLER_PATTERNS = (
 _MAX_FILLER_LEN = max(len(p) for p in _FILLER_PATTERNS)
 
 def _env_filler() -> bool:
-    """Filler stripping is opt-in: unset defaults to off."""
-    v = os.environ.get("SLIMTOKEN_FILLER")
-    if v is None:
-        return False
-    return v.strip().lower() in ("1", "true", "yes", "on")
+    """Filler stripping is PERMANENTLY DISABLED (owner order 2026-11-08).
+    It rewrites the model's streamed output (strips lead-in phrases) and has
+    mangled generated code on build lanes. Returns False unconditionally;
+    SLIMTOKEN_FILLER is ignored. Do not re-enable — see git blame."""
+    return False
 
 def _env_max_tokens() -> Optional[int]:
     v = os.environ.get("SLIMTOKEN_MAX_TOKENS")
@@ -347,8 +347,8 @@ def from_env() -> Optional["OutputFilter"]:
     return OutputFilter(max_tokens=mt, stops=stops, filler=filler, block=block)
 
 def _bool_env_block() -> bool:
-    """Special-token blocking is opt-in: unset defaults to off."""
-    v = os.environ.get("SLIMTOKEN_BLOCK_TOKENS")
-    if v is None:
-        return False
-    return v.strip().lower() in ("1", "true", "yes", "on")
+    """Special-token blocking is PERMANENTLY DISABLED (owner order 2026-11-08).
+    It rewrote bare endoftext/fim_* words ANYWHERE in output — including inside
+    code identifiers and string literals. Returns False unconditionally;
+    SLIMTOKEN_BLOCK_TOKENS is ignored. Do not re-enable — see git blame."""
+    return False

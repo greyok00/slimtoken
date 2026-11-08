@@ -62,14 +62,13 @@ def test_filters_are_independent_instances(monkeypatch):
     assert b"still open" in out
 
 def test_block_env_disable(monkeypatch):
+    # 2026-11-08 owner order: filler/block are source-disabled. from_env() must
+    # return None even when env vars request them — the filter stays inert.
     monkeypatch.setenv("SLIMTOKEN_BLOCK_TOKENS", "0")
     monkeypatch.setenv("SLIMTOKEN_FILLER", "1")
     monkeypatch.delenv("SLIMTOKEN_MAX_TOKENS", raising=False)
     monkeypatch.delenv("SLIMTOKEN_STOP", raising=False)
-    f = from_env()
-    raw = f.feed(_sse_frame(f"raw {SPECIAL} passthrough")) + f.finish()
-    assert SPECIAL in raw.decode()
-    assert f.block is False
+    assert from_env() is None
 
 def test_output_filter_inert_without_env(monkeypatch):
     for var in ("SLIMTOKEN_FILLER", "SLIMTOKEN_BLOCK_TOKENS",
