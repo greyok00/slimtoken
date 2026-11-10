@@ -136,6 +136,15 @@ def minify_request(body: dict, cfg):
             store_func = None
         if store_func is not None:
             _dedup_append_only(messages, cfg, store_func, stats)
+        # 2026-11-09: the loop-guard rides the same seam (owner-reported
+        # compaction loop: an answered steering message kept re-serving as
+        # fresh). Signs live in the served history itself; no request
+        # state; runs whenever messages exist, dedup on or off.
+        try:
+            from ._loopguard_fix import apply_loopguard
+            apply_loopguard(messages, stats)
+        except Exception:
+            pass
     return out, stats
 
 
