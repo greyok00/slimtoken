@@ -109,6 +109,31 @@ pipeline as MCP tools (`optimize_messages`, `estimate_tokens`, `prune_context`,
 Also shipped: `slimtoken-reframe-mcp` (turns a rambling prompt into a tight
 instruction with no model call) and `slimtoken-memory-mcp` (the memory store).
 
+## Web lanes (0.8.2): web_search / web_fetch on every port
+
+Every slimtoken proxy answers Ollama-style web routes on its own port, so tools
+that expect them (pi coding-agent's `web_search` / `web_fetch`, any ollama
+client) work even when the local ollama daemon lacks the routes:
+
+```bash
+curl -X POST http://127.0.0.1:8181/api/web_search \
+     -d '{"query": "free ai testing tools", "max_results": 5}'
+curl -X POST http://127.0.0.1:8181/api/web_fetch \
+     -d '{"url": "https://example.com/article"}'
+```
+
+- `web_search`: SearXNG lane first (`SLIMTOKEN_SEARXNG`, default
+  `http://127.0.0.1:8888`), keyless DuckDuckGo-lite fallback. Returns
+  `{query, lane, results: [{title, url, description}]}`.
+- `web_fetch` / `web_search`: also answer at the unprefixed `/web_search`,
+  `/web_fetch`, and (GET) with query-string args.
+- `web_fetch`: polite UA, redirects followed, HTML stripped to readable text
+  (200 KB cap). Returns `{url, status, text, content_type}`.
+
+These routes bypass the minify pipeline entirely (chat requests are never
+web-routed), run their network I/O off the event loop via `asyncio.to_thread`,
+and degrade with a JSON error — never a hang — when all lanes fail.
+
 ## What runs by default vs. what you can turn on
 
 The default `code` mode never rewrites a tool result, never touches model

@@ -25,7 +25,7 @@ minify_request) and wires in compiled fix modules when present.
 """
 import sys as _sys
 import types as _types
-__version__ = '0.8.1'
+__version__ = '0.8.2'
 
 def _wire_fixes() -> None:
     try:

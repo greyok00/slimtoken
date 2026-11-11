@@ -12,7 +12,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import httpx
 
@@ -39,6 +39,85 @@ _metrics: Dict = {
 _HOP_BY_HOP = {"host", "content-length", "transfer-encoding", "expect",
                "connection", "keep-alive", "proxy-connection", "te", "trailer",
                "upgrade"}
+
+# ===================== WEB LANES (web_search / web_fetch) =====================
+# 2026-11-11 (owner order: "make a proxy for web search to use or somehow fix
+# slimtoken to do that ... if others use it then it will work"): pi's web tools
+# POST /api/web_search|/api/web_fetch at the local ollama address — which was
+# dead (or lacking the routes) on every box that hit the "fetch failed" loop.
+# Serving the routes HERE means every slimtoken deployment exposes them on the
+# same port as the model lane; any ollama client + pi tool just works.
+
+_WEB_UA = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+_SEARXNG_URL = os.environ.get("SLIMTOKEN_SEARXNG", "http://127.0.0.1:8888")
+
+
+def _readable_text(html: str) -> str:
+    import re as _re
+    import html as _html
+    html = _re.sub(r"(?is)<script.*?</script>", " ", html)
+    html = _re.sub(r"(?is)<style.*?</style>", " ", html)
+    html = _re.sub(r"(?is)<(nav|footer|aside|form|svg).*?</\1>", " ", html)
+    html = _re.sub(r"(?is)<(h[1-6]|p|li|tr|br|div|pre|blockquote)[^>]*>", "\n", html)
+    text = _re.sub(r"(?s)<[^>]+>", " ", html)
+    text = _html.unescape(text)
+    text = _re.sub(r"[ \t]+", " ", text)
+    text = _re.sub(r"\n\s*\n+", "\n\n", text)
+    return text.strip()
+
+
+def web_search_sync(query: str, max_results: int = 8) -> Tuple[str, list]:
+    """SearXNG lane first, DuckDuckGo-lite keyless fallback. Returns (lane, results)."""
+    import urllib.parse as _up
+    q = _up.quote_plus(query)
+    try:
+        with httpx.Client(timeout=12.0, follow_redirects=True) as c:
+            r = c.get(f"{_SEARXNG_URL}/search?q={q}&format=json&language=en",
+                      headers={"User-Agent": _WEB_UA, "Accept": "application/json"})
+        data = json.loads(r.text)
+        results = [dict(title=x.get("title", ""), url=x.get("url", ""),
+                        description=x.get("content", ""))
+                   for x in data.get("results", [])[:max_results]]
+        if results:
+            return "searxng", results
+    except Exception:
+        pass
+    # fallback: DDG lite HTML
+    with httpx.Client(timeout=15.0, follow_redirects=True) as c:
+        r = c.get(f"https://lite.duckduckgo.com/lite/?q={q}",
+                  headers={"User-Agent": _WEB_UA})
+    import re as _re
+    import html as _html
+    import urllib.parse as _up
+    results = []
+    for cell, link in _re.findall(
+            r'<td[^>]*>(.*?)</td>\s*<td[^>]*>.*?<a[^>]+href="([^"]+)"', r.text, _re.S):
+        m = _re.search(r"uddg=([^&]+)", link)
+        if not m:
+            continue
+        url = _up.unquote(m.group(1))
+        if url.startswith("https://duckduckgo.com/y.js") or url.startswith("//duckduckgo.com/l"):
+            continue  # promoted/ad rows
+        title = _re.sub(r"<[^>]+>", "", _html.unescape(cell))[:200].strip()
+        results.append(dict(title=title or url, url=url, description=""))
+        if len(results) >= max_results:
+            break
+    if not results:
+        raise RuntimeError("all search lanes failed")
+    return "duckduckgo-lite", results
+
+
+def web_fetch_sync(url: str, limit: int = 200_000) -> dict:
+    import urllib.parse as _up
+    if not url.startswith(("http://", "https://")):
+        raise RuntimeError("url required (http/https)")
+    if not _up.urlparse(url).netloc:
+        raise RuntimeError("malformed url")
+    with httpx.Client(timeout=25.0, follow_redirects=True) as c:
+        r = c.get(url, headers={"User-Agent": _WEB_UA})
+    text = _readable_text(r.text)
+    return dict(url=str(r.url), status=r.status_code, text=text[:limit],
+                content_type=r.headers.get("content-type", ""))
 
 def _record(pt: int, ct: int, elapsed: float, lat: dict):
     _metrics["prompt_tokens"] += pt
@@ -307,6 +386,59 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
             writer.write(head)
             await writer.drain()
             return
+
+        # ---- web lanes (2026-11-11, owner order) -------------------------
+        # POST /api/web_search {query, max_results?} -> {lane, results[]}
+        # POST/GET /api/web_fetch {url} -> {url, status, text}
+        # Mirrored on non-prefixed /web_search and /web_fetch too.
+        if path.strip("/") in ("api/web_search", "web_search"):
+            try:
+                args = jloads(body.decode("utf-8", "replace")) if body else {}
+            except Exception:
+                args = {}
+            query = str(args.get("query") or args.get("q") or "").strip()
+            if not query:
+                # GET query-string form
+                import urllib.parse as _up
+                qs = _up.parse_qs(_up.urlparse(path).query)
+                query = (qs.get("q") or qs.get("query") or [""])[0].strip()
+            if not query:
+                out = jdumps({"error": "query required"})
+            else:
+                try:
+                    lane, results = await asyncio.to_thread(
+                        web_search_sync, query,
+                        max(1, min(int(args.get("max_results", 8)), 25)))
+                    out = jdumps({"query": query, "lane": lane, "results": results})
+                except Exception as e:
+                    out = jdumps({"error": str(e)})
+            head = (f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                    f"Content-Length: {len(out)}\r\nConnection: close\r\n\r\n").encode() + out
+            writer.write(head)
+            await writer.drain()
+            return
+
+        if path.strip("/") in ("api/web_fetch", "web_fetch"):
+            try:
+                args = jloads(body.decode("utf-8", "replace")) if body else {}
+            except Exception:
+                args = {}
+            url = str(args.get("url") or "").strip()
+            if not url:
+                import urllib.parse as _up
+                qs = _up.parse_qs(_up.urlparse(path).query)
+                url = (qs.get("url") or [""])[0].strip()
+            try:
+                payload = await asyncio.to_thread(web_fetch_sync, url)
+                out = jdumps(payload)
+            except Exception as e:
+                out = jdumps({"error": str(e)})
+            head = (f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                    f"Content-Length: {len(out)}\r\nConnection: close\r\n\r\n").encode() + out
+            writer.write(head)
+            await writer.drain()
+            return
+        # ---- end web lanes -----------------------------------------------
 
         if method == "POST" and not _is_fast_path(body):
             out_body = _minify_body(body, adapters.detect(path) or "anthropic")
