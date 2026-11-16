@@ -209,6 +209,18 @@ saves on your own text:
 | `SLIMTOKEN_MEMORY_*` | memory tier names, scheduler tick, distiller cadence |
 | `SLIMTOKEN_LAZY_MCP_CONFIG` | path of the lazy-MCP server list (default `~/.slimtoken/lazy_mcp.json`) |
 
+**Local model or cloud (Ollama):** the lane forwards to whatever `SLIMTOKEN_UPSTREAM` names. One line decides where the model runs:
+
+```bash
+# local llama.cpp server (default)
+export SLIMTOKEN_UPSTREAM="http://127.0.0.1:8080"
+
+# Ollama instead - local ollama :11434 or your ollama-cloud host:
+export SLIMTOKEN_UPSTREAM="http://127.0.0.1:11600/v1"
+```
+
+For provider-side prompt caching keep the cache-safe stage set (`SLIMTOKEN_MINIFY_MESSAGES=0 SLIMTOKEN_MINIFY_DISTILL=0 SLIMTOKEN_MINIFY_SYSTEM=0`; tools + append-only dedup + the loop-guard stay on): lossy passes rewrite earlier turns and invalidate the cached prefix, while the cache-safe set keeps it byte-stable.
+
 ## Install
 
 Requirements: Python 3.13+ and pip; there are no compiled modules or platform
