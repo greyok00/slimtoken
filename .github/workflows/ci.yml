@@ -1,0 +1,60 @@
+name: ci
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install ruff
+      - run: ruff check .
+
+  suite:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install package + test deps
+        run: pip install -e '.[dev,mcp]' pytest httpx
+      - name: Run test suite
+        run: pytest tests/ -v
+
+  wheel:
+    runs-on: ubuntu-latest
+    needs: suite
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build wheel
+        run: |
+          pip install build
+          python -m build --wheel -o dist .
+      - name: Clean venv install from wheel
+        run: |
+          python -m venv /tmp/vv
+          /tmp/vv/bin/pip install dist/slimtoken-*.whl mcp
+      - name: Entry-point smoke tests
+        run: |
+          /tmp/vv/bin/slimtoken modes
+          /tmp/vv/bin/slimtoken optimize --help
+          /tmp/vv/bin/slimtoken-serve --help
+          /tmp/vv/bin/slimtoken-mcp --help
+          /tmp/vv/bin/slimtoken-memory-mcp --help
+          /tmp/vv/bin/slimtoken-reframe-mcp --help
