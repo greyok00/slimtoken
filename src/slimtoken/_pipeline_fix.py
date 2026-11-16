@@ -145,6 +145,15 @@ def minify_request(body: dict, cfg):
             apply_loopguard(messages, stats)
         except Exception:
             pass
+        # 2026-11-16: the native pass measured tokens_out BEFORE these
+        # append-only shims shrank the served messages. Re-measure the final
+        # body so the ledger credits the real, post-pass savings.
+        try:
+            from .tokencount import count_obj
+            if out:
+                stats.tokens_out = count_obj(out)
+        except Exception:
+            pass
     return out, stats
 
 
