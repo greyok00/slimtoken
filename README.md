@@ -158,7 +158,8 @@ that stripped lead-ins or rewrote bare `endoftext`-style words — were removed
 from the code with no mode, CLI flag, or env var that can re-enable them.
 Tool results reach the model byte-verbatim; model output reaches your client
 byte-verbatim (the output filter is inert unless you set the caps above). See
-[CHANGELOG.md](CHANGELOG.md) for the reasoning.
+the [GitHub Releases page](https://github.com/greyok00/slimtoken/releases) for
+the reasoning.
 
 Two guarantees on top:
 

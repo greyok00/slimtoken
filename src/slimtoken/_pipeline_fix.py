@@ -129,6 +129,14 @@ def minify_request(body: dict, cfg):
     out, stats = _NATIVE.minify_request(body, cfg)
     messages = out.get("messages") if isinstance(out, dict) else None
     if messages is not None:
+        # 2026-11-21: minify_request is the public library API; when no
+        # stage rebuilt the list, out["messages"] IS the caller's list and
+        # the dedup shim below rewrites tool_result blocks in place. Copy
+        # first so a caller holding the original body (retry, cache entry)
+        # keeps its real tool output instead of inheriting the stubs.
+        if messages is body.get("messages"):
+            messages = copy.deepcopy(messages)
+            out["messages"] = messages
         try:
             import slimtoken.artifacts as art
             store_func = art.store

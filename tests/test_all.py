@@ -346,7 +346,7 @@ def test_proxy_e2e():
         s.close()
         time.sleep(0.3)
         got = json.loads(received["body"])
-        check("proxy strips grammar", "grammar" not in got)
+        check("proxy forwards grammar untouched", got.get("grammar") == payload["grammar"])
 
         check("proxy default leaves the system prompt alone",
               got["system"] == payload["system"], f'system={got["system"]!r}')

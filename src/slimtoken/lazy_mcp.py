@@ -48,9 +48,13 @@ def _read_json(stream) -> Optional[Dict[str, Any]]:
         return None
 
 def _proxy_server(command: List[str]) -> Tuple[subprocess.Popen, int]:
+    # stderr goes to DEVNULL: nothing drains a PIPE in steady state, so a
+    # chatty child fills the ~64 KB pipe buffer, blocks on its stderr write,
+    # stops answering stdout, and this stub then blocks forever on readline.
+    # The init-failure paths below already tolerate a closed stderr stream.
     proc = subprocess.Popen(
         command,
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         text=True)
 
     hello = _read_json(proc.stdout)

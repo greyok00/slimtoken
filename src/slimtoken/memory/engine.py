@@ -10,11 +10,23 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-MEMORY_DIR = Path.home() / ".config" / "cortexllm"
-HOT_DIR = MEMORY_DIR / "memory" / "hot"
+from . import config as _config
 
-WARM_DIR = MEMORY_DIR / "memory" / "warm"
-COLD_DIR = MEMORY_DIR / "memory" / "cold"
+
+def _memory_root() -> Path:
+    """Store root: SLIMTOKEN_MEMORY_DIR wins, else the documented default."""
+    base = os.environ.get("SLIMTOKEN_MEMORY_DIR")
+    return Path(base).expanduser() if base else Path.home() / ".slimtoken" / "memory"
+
+
+# Paths follow the documented knobs (SLIMTOKEN_MEMORY_DIR root plus the
+# config.py *_SUBDIR tier names) instead of a hardcoded directory that
+# belonged to another project; tier dirs re-locate cleanly via env.
+MEMORY_DIR = _memory_root()
+HOT_DIR = MEMORY_DIR / _config.HOT_SUBDIR
+
+WARM_DIR = MEMORY_DIR / _config.WARM_SUBDIR
+COLD_DIR = MEMORY_DIR / _config.COLD_SUBDIR
 ENTERPRISE_DB = MEMORY_DIR / "cortexllm.db"
 
 PIPE_BUF = 4096

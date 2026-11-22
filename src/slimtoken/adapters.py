@@ -102,12 +102,20 @@ def to_canonical(body: dict, fmt: str) -> dict:
                 if not isinstance(tc, dict):
                     continue
                 fn = tc.get("function", {}) if isinstance(tc.get("function"), dict) else {}
-                blocks.append({
+                raw_args = fn.get("arguments", "{}")
+                block = {
                     "type": "tool_use",
                     "id": tc.get("id", ""),
                     "name": fn.get("name", ""),
-                    "input": _parse_args(fn.get("arguments", "{}")),
-                })
+                    "input": _parse_args(raw_args),
+                }
+                # an argument string that failed to parse cannot survive a
+                # parse/dumps round-trip; carry the original along so
+                # from_canonical re-emits exactly what the model produced.
+                if isinstance(raw_args, str) and isinstance(block["input"], dict) \
+                        and "_raw" in block["input"]:
+                    block["_raw_args"] = raw_args
+                blocks.append(block)
             if blocks:
                 canon_msgs.append({"role": "assistant", "content": blocks})
             continue
@@ -222,7 +230,11 @@ def from_canonical(body: dict, fmt: str) -> dict:
                         continue
                     if b.get("type") == "tool_use":
                         inp = b.get("input", {})
-                        args = json.dumps(inp) if not isinstance(inp, str) else inp
+                        # _raw_args is the untouched original argument string
+                        # carried through to_canonical; re-emit it verbatim.
+                        raw = b.get("_raw_args")
+                        args = raw if isinstance(raw, str) else (
+                            json.dumps(inp) if not isinstance(inp, str) else inp)
                         tool_calls.append({
                             "id": b.get("id", ""),
                             "type": "function",

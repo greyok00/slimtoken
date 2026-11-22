@@ -20,6 +20,9 @@ no cross-request state:
   * USER-REPEAT SIGNATURE — a user turn byte-identical to an earlier user
     turn (the steering re-feed itself) gets the same marker: identical
     steering seen twice in one request can never be a new instruction.
+    The LAST message is exempt: a repeated short instruction ("continue",
+    "yes") at the tail is a fresh turn the model must answer, not a
+    re-feed — stamping it would tell the model to ignore the user.
 
 The marker is appended to the user turn's text; it is idempotent (a stamped
 turn is never stamped twice — the guard-test law, same as the 0.8.0
@@ -131,16 +134,19 @@ def apply_loopguard(messages: List[dict], stats=None) -> int:
         if not text or MARKER in text:
             continue
         if text in seen_user:
-            changed += 1  # provisional count; stamping decides
             user_shapes.setdefault(text, (seen_user[text], shape))
         seen_user[text] = i
 
-    for text, (first_i, shape) in user_shapes.items():
+    for text, (first_i, _shape) in user_shapes.items():
         # the SECOND and later identical user turns are the re-feed; stamp
-        # from the first duplicate onward
+        # from the first duplicate onward — but never the LAST message:
+        # a repeated short instruction ("continue", "yes") is a fresh
+        # steering turn the model must answer, and stamping the tail tells
+        # it to ignore the user's live message.
+        last = len(messages) - 1
         for i, shape in _user_blocks(messages):
             t = _user_text(messages, i, shape)
-            if i > first_i and t == text:
+            if first_i < i < last and t == text:
                 if _stamp(messages, i, shape):
                     changed += 1
 

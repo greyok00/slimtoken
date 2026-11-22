@@ -57,9 +57,10 @@ def store(content, kind: str = "unknown", origin: str = "") -> Optional[str]:
     """Store ``content`` (bytes) and return its digest, or ``None`` on refusal.
 
     Empty or non-bytes payloads are rejected. Storing is idempotent: the same
-    content always resolves to the same digest and rewrites nothing. Each
-    store appends a record to the append-only ``index.jsonl`` log so the
-    artifact history can be listed later.
+    content always resolves to the same digest and rewrites nothing. The
+    FIRST store of a digest appends one record to the append-only
+    ``index.jsonl`` log so the artifact history can be listed later; re-
+    stores of known content touch the history log not at all.
     """
     if content is None:
         return None
@@ -69,7 +70,13 @@ def store(content, kind: str = "unknown", origin: str = "") -> Optional[str]:
         return None
     digest = hashlib.sha256(content).hexdigest()
     try:
-        _write_owner_only(_blob_path(digest), content)
+        blob = _blob_path(digest)
+        # the hot path re-stores the same tool_result on every proxied
+        # request; only the FIRST store appends to the history log, so
+        # index.jsonl stays one line per distinct payload instead of
+        # growing by one line per request for the life of the deployment.
+        first_store = not blob.exists()
+        _write_owner_only(blob, content)
         meta = {
             "digest": digest,
             "kind": kind,
@@ -77,18 +84,19 @@ def store(content, kind: str = "unknown", origin: str = "") -> Optional[str]:
             "bytes": len(content),
         }
         _write_owner_only(_index_path(digest), json.dumps(meta).encode("utf-8"))
-        rec = {
-            "digest": digest,
-            "kind": kind,
-            "origin": origin,
-            "bytes": len(content),
-        }
-        idx = artifact_dir() / "index.jsonl"
-        line = json.dumps(rec).encode("utf-8")
-        idx.parent.mkdir(parents=True, exist_ok=True)
-        with open(idx, "a") as f:
-            f.write(line.decode("utf-8") + "\n")
-        os.chmod(idx, 0o600)
+        if first_store:
+            rec = {
+                "digest": digest,
+                "kind": kind,
+                "origin": origin,
+                "bytes": len(content),
+            }
+            idx = artifact_dir() / "index.jsonl"
+            line = json.dumps(rec).encode("utf-8")
+            idx.parent.mkdir(parents=True, exist_ok=True)
+            with open(idx, "a") as f:
+                f.write(line.decode("utf-8") + "\n")
+            os.chmod(idx, 0o600)
     except OSError:
         return None
     return digest

@@ -39,11 +39,21 @@ def _extract(msgs, i):
 
 
 def test_identical_user_refeed_stamps_the_later_copy():
-    msgs = [_steer(), _asst("working on it"), _steer()]
+    # an intermediate re-feed (history continues after it) is the loop
+    # signature: that turn was already answered, so it carries the marker.
+    msgs = [_steer(), _asst("working on it"), _steer(), _asst("still going")]
     n = apply_loopguard(msgs)
     assert n >= 1
     assert MARKER not in _extract(msgs, 0), "first copy stays clean"
-    assert MARKER in _extract(msgs, -1), "the re-feed copy carries the stamp"
+    assert MARKER in _extract(msgs, 2), "the re-feed copy carries the stamp"
+
+
+def test_fresh_tail_instruction_is_never_stamped():
+    # a repeated short instruction at the tail is a NEW turn the model must
+    # answer, not a re-feed; stamping it tells the model to ignore the user.
+    msgs = [_user("continue"), _asst("still going"), _user("continue")]
+    assert apply_loopguard(msgs) == 0
+    assert MARKER not in _extract(msgs, -1)
 
 
 def test_plain_conversation_never_stamped():
