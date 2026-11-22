@@ -26,6 +26,8 @@ _metrics: Dict = {
     "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
     "requests": 0, "total_time_s": 0.0, "started_at": datetime.now().isoformat(),
     "current_tok_s": 0.0, "avg_tok_s": 0.0,
+    # 2026-11-19: true generation speed, separate from end-to-end average.
+    "gen_tok_s": 0.0, "generation_time_s": 0.0,
 
     "latency": {
         "proxy_ingress": 0.0,
@@ -125,8 +127,18 @@ def _record(pt: int, ct: int, elapsed: float, lat: dict):
     _metrics["total_tokens"] += pt + ct
     _metrics["requests"] += 1
     _metrics["total_time_s"] += elapsed
-    if elapsed > 0 and ct > 0:
-        _metrics["current_tok_s"] = round(ct / elapsed, 1)
+    # 2026-11-19 (owner: "it's not tracking correctly"): generation speed is
+    # completion tokens over time spent generating, not over total time. Total
+    # time includes prefill, so a 1.7k-token prompt made a 6.8 tok/s turn read
+    # as 0.6 tok/s. avg_tok_s stays as the end-to-end average for the record.
+    gen_s = float(lat.get("generation") or 0)
+    if gen_s > 0 and ct > 0:
+        _metrics["current_tok_s"] = round(ct / gen_s, 1)
+        _metrics["generation_time_s"] = round(
+            _metrics["generation_time_s"] + gen_s, 4)
+    if _metrics["generation_time_s"] > 0 and _metrics["completion_tokens"] > 0:
+        _metrics["gen_tok_s"] = round(
+            _metrics["completion_tokens"] / _metrics["generation_time_s"], 1)
     if _metrics["total_time_s"] > 0 and _metrics["completion_tokens"] > 0:
         _metrics["avg_tok_s"] = round(
             _metrics["completion_tokens"] / _metrics["total_time_s"], 1)
@@ -140,7 +152,8 @@ def _record(pt: int, ct: int, elapsed: float, lat: dict):
 
 def _metrics_json() -> str:
     m = dict(_metrics)
-    m = {**m, "latency": dict(m["latency"])}
+    m = {**m, "latency": dict(m["latency"]), "minify": dict(_minify_stats)}
+    m["minify"].pop("history_60s", None)
     return json.dumps(m, indent=2)
 
 # 2026-11-08 owner: the stats path is read from env at _record_minify() time,
@@ -153,6 +166,7 @@ _minify_stats = {
     "history_60s": [],
 }
 _MINIFY_HIST_CAP = 60
+_STATS_WARNED = False
 
 def _record_minify(stats) -> None:
     global _MINIFY_STATS_FILE
@@ -181,11 +195,23 @@ def _record_minify(stats) -> None:
         if len(hist) > _MINIFY_HIST_CAP:
             del hist[:-_MINIFY_HIST_CAP]
         tmp = _MINIFY_STATS_FILE + ".tmp"
+        # the README's systemd unit points SLIMTOKEN_STATS_FILE at
+        # /var/lib/slimtoken/stats.json; without this the write dies on the
+        # missing parent dir and the ledger never appears, silently.
+        parent = os.path.dirname(_MINIFY_STATS_FILE)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         with open(tmp, "w") as f:
             json.dump(_minify_stats, f, default=str)
         os.replace(tmp, _MINIFY_STATS_FILE)
-    except Exception:
-        pass
+    except Exception as e:
+        # stats are best-effort, but a dead write path should be visible at
+        # least once — a permanently silent ledger reads as "no savings".
+        global _STATS_WARNED
+        if not _STATS_WARNED:
+            _STATS_WARNED = True
+            print(f"[proxy] stats ledger unavailable at "
+                  f"{_MINIFY_STATS_FILE}: {e}", file=sys.stderr)
 
 def _bool_env(name: str, default: bool) -> bool:
     v = os.environ.get(name)
@@ -268,9 +294,6 @@ def _minify_body(body: bytes, fmt: str = "anthropic") -> bytes:
         print(f"[proxy] body parse failed (passthrough): {e}", file=sys.stderr)
         return body
     if isinstance(parsed, dict):
-        if "grammar" in parsed:
-            del parsed["grammar"]
-
         try:
             if fmt != "anthropic":
                 parsed = adapters.to_canonical(parsed, fmt)
